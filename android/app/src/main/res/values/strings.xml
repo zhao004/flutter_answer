@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Reads question UIs and performs safe answer actions for the agent scaffold.</string>
+</resources>
