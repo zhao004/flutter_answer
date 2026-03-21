@@ -7,6 +7,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
+import '../../services/agent_diagnostic_hint.dart';
 import '../../services/overlay_message_bridge.dart';
 
 enum _OverlayWindowMode { compact, standard, expanded }
@@ -114,6 +115,23 @@ class _OverlayViewState extends State<OverlayView> {
       _agentRunStatus['status']?.toString() ?? 'idle',
     );
     final message = _agentRunStatus['message']?.toString() ?? '就绪';
+    final hint = resolveAgentDiagnosticHint(
+      serviceStatus: _serviceStatus,
+      agentConfig: _agentConfig,
+      agentRunStatus: _agentRunStatus,
+    );
+    final hintColor = switch (hint?.severity) {
+      AgentDiagnosticSeverity.info => const Color(0xFF0B5D5B),
+      AgentDiagnosticSeverity.warning => const Color(0xFF9A6700),
+      AgentDiagnosticSeverity.error => const Color(0xFFB3261E),
+      null => const Color(0xFF0B5D5B),
+    };
+    final hintIcon = switch (hint?.severity) {
+      AgentDiagnosticSeverity.info => Icons.info_outline,
+      AgentDiagnosticSeverity.warning => Icons.warning_amber_outlined,
+      AgentDiagnosticSeverity.error => Icons.error_outline,
+      null => Icons.info_outline,
+    };
 
     return Material(
       color: Colors.transparent,
@@ -298,6 +316,49 @@ class _OverlayViewState extends State<OverlayView> {
                                             color: const Color(0xFF4A6260),
                                           ),
                                     ),
+                                    if (hint != null) ...[
+                                      const SizedBox(height: 8),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 8,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: hintColor.withValues(
+                                            alpha: 0.10,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Icon(
+                                              hintIcon,
+                                              size: 16,
+                                              color: hintColor,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                '建议：${hint.actions.isNotEmpty ? hint.actions.first : hint.summary}',
+                                                maxLines: isCompact ? 2 : 3,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: theme.textTheme.bodySmall
+                                                    ?.copyWith(
+                                                      color: hintColor,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),

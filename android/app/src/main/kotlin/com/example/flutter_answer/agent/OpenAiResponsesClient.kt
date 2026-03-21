@@ -15,6 +15,34 @@ object OpenAiResponsesClient {
         tools: JSONArray,
         input: JSONArray,
     ): JSONObject {
+        val body = JSONObject()
+            .put("model", model)
+            .put("instructions", instructions)
+            .put("tools", tools)
+            .put("tool_choice", "required")
+            .put("input", input)
+        return executeRequest(providerUrl, apiKey, body)
+    }
+
+    fun createTextResponse(
+        providerUrl: String,
+        apiKey: String,
+        model: String,
+        instructions: String,
+        input: JSONArray,
+    ): JSONObject {
+        val body = JSONObject()
+            .put("model", model)
+            .put("instructions", instructions)
+            .put("input", input)
+        return executeRequest(providerUrl, apiKey, body)
+    }
+
+    private fun executeRequest(
+        providerUrl: String,
+        apiKey: String,
+        body: JSONObject,
+    ): JSONObject {
         val endpoint = normalizeEndpoint(providerUrl)
         val connection = URL(endpoint).openConnection() as HttpURLConnection
         connection.requestMethod = "POST"
@@ -23,12 +51,6 @@ object OpenAiResponsesClient {
         connection.readTimeout = 60000
         connection.setRequestProperty("Authorization", "Bearer $apiKey")
         connection.setRequestProperty("Content-Type", "application/json")
-
-        val body = JSONObject()
-            .put("model", model)
-            .put("instructions", instructions)
-            .put("tools", tools)
-            .put("input", input)
 
         return try {
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->

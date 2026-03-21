@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../services/agent_diagnostic_hint.dart';
 import 'home_controller.dart';
 
 class HomeView extends GetView<HomeController> {
@@ -17,10 +18,321 @@ class HomeView extends GetView<HomeController> {
           const SizedBox(height: 16),
           _AgentConfigCard(controller: controller),
           const SizedBox(height: 16),
+          _ConnectivityChatCard(controller: controller),
+          Obx(() {
+            final hint = resolveAgentDiagnosticHint(
+              serviceStatus: controller.serviceStatus,
+              agentConfig: controller.agentConfig,
+              agentRunStatus: controller.agentRunStatus,
+            );
+            if (hint == null) {
+              return const SizedBox.shrink();
+            }
+            return Column(
+              children: [
+                const SizedBox(height: 16),
+                _AgentHintCard(hint: hint),
+              ],
+            );
+          }),
+          const SizedBox(height: 16),
           Obx(() => _PayloadCard(payload: controller.lastPayload.value)),
           const SizedBox(height: 16),
           Obx(() => _LogsCard(logs: controller.logs.toList())),
         ],
+      ),
+    );
+  }
+}
+
+class _ConnectivityChatCard extends StatelessWidget {
+  const _ConnectivityChatCard({required this.controller});
+
+  final HomeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final messages = controller.connectivityMessages.toList();
+      final isTesting = controller.isConnectivityTesting.value;
+      final notice = controller.connectivityNotice.value;
+      final lastOk = controller.connectivityLastOk.value;
+      final latencyMs = controller.connectivityLatencyMs.value;
+      final model = controller.agentConfig['model']?.toString() ?? '未设置模型';
+      final statusLabel = switch ((isTesting, lastOk)) {
+        (true, _) => '检测中',
+        (false, true) => '最近一次成功',
+        (false, false) => '最近一次失败',
+        _ => '未检测',
+      };
+      final statusColor = switch ((isTesting, lastOk)) {
+        (true, _) => Theme.of(context).colorScheme.primary,
+        (false, true) => const Color(0xFF2E7D32),
+        (false, false) => Theme.of(context).colorScheme.error,
+        _ => Theme.of(context).colorScheme.outline,
+      };
+
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '模型对话检测',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: messages.isEmpty && !isTesting
+                        ? null
+                        : controller.clearConnectivityConversation,
+                    icon: const Icon(Icons.refresh_outlined),
+                    label: const Text('清空'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '发送前会自动同步当前提供商配置，适合检查接口地址、API 密钥和模型是否能正常对话。',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _InlineChip(label: statusLabel, color: statusColor),
+                  _InlineChip(
+                    label: latencyMs == null ? '耗时 --' : '耗时 ${latencyMs}ms',
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
+                  _InlineChip(
+                    label: '模型 $model',
+                    color: const Color(0xFF0B5D5B),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                height: messages.isEmpty ? 148 : 280,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerLowest,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+                child: messages.isEmpty
+                    ? Center(
+                        child: Text(
+                          '先发一条消息试试，例如：请回复“模型连通正常”。',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: messages.length,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          return _ConversationBubble(message: messages[index]);
+                        },
+                      ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(notice),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller.connectivityInputController,
+                minLines: 1,
+                maxLines: 4,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) {
+                  if (!isTesting) {
+                    controller.sendConnectivityMessage();
+                  }
+                },
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: '测试消息',
+                  hintText: '输入一条消息，验证当前模型是否可正常回复',
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: isTesting || controller.isBusy.value
+                          ? null
+                          : controller.sendConnectivityMessage,
+                      icon: isTesting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send_outlined),
+                      label: Text(isTesting ? '检测中...' : '发送检测消息'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _AgentHintCard extends StatelessWidget {
+  const _AgentHintCard({required this.hint});
+
+  final AgentDiagnosticHint hint;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final (accentColor, iconData) = switch (hint.severity) {
+      AgentDiagnosticSeverity.info => (colorScheme.primary, Icons.info_outline),
+      AgentDiagnosticSeverity.warning => (
+        const Color(0xFF9A6700),
+        Icons.warning_amber_outlined,
+      ),
+      AgentDiagnosticSeverity.error => (colorScheme.error, Icons.error_outline),
+    };
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(iconData, color: accentColor),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    hint.title,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(hint.summary),
+            if (hint.actions.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              ...List.generate(
+                hint.actions.length,
+                (index) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('${index + 1}. ${hint.actions[index]}'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineChip extends StatelessWidget {
+  const _InlineChip({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _ConversationBubble extends StatelessWidget {
+  const _ConversationBubble({required this.message});
+
+  final ProbeConversationMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = message.isUser;
+    final bubbleColor = message.failed
+        ? Theme.of(context).colorScheme.errorContainer
+        : isUser
+        ? Theme.of(context).colorScheme.primaryContainer
+        : Colors.white;
+    final label = message.failed
+        ? '未送达'
+        : isUser
+        ? '你'
+        : '模型';
+
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 320),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: bubbleColor,
+            borderRadius: BorderRadius.circular(16),
+            border: message.failed
+                ? Border.all(color: Theme.of(context).colorScheme.error)
+                : null,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: message.failed
+                        ? Theme.of(context).colorScheme.error
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(message.content),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

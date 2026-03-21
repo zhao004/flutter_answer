@@ -87,6 +87,12 @@ class AgentBridge {
     return _invoke('stopAgentRun');
   }
 
+  Future<Map<String, dynamic>> sendConnectivityProbe({
+    required List<Map<String, String>> messages,
+  }) {
+    return _invoke('sendConnectivityProbe', {'messages': messages});
+  }
+
   Future<Map<String, dynamic>> _invoke(
     String method, [
     Map<String, dynamic>? arguments,

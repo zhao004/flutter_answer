@@ -68,6 +68,13 @@ class MainActivity : FlutterActivity() {
 
             "startAgentRun" -> result.success(AgentRuntime.startRun())
             "stopAgentRun" -> result.success(AgentRuntime.stopRun())
+            "sendConnectivityProbe" -> {
+                val messages = call.argument<List<*>>("messages") ?: emptyList<Any>()
+                Thread {
+                    val payload = AgentRuntime.sendConnectivityProbe(messages)
+                    runOnUiThread { result.success(payload) }
+                }.start()
+            }
 
             else -> result.notImplemented()
         }

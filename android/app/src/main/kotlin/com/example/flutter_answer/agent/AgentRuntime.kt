@@ -163,6 +163,77 @@ object AgentRuntime {
         )
     }
 
+    fun sendConnectivityProbe(messages: List<*>): Map<String, Any?> {
+        val activeConfig = synchronized(this) { config }
+        if (activeConfig.apiKey.isBlank()) {
+            return mapOf(
+                "ok" to false,
+                "message" to "Set an OpenAI API key before sending a test message.",
+            )
+        }
+        if (activeConfig.providerUrl.isBlank()) {
+            return mapOf(
+                "ok" to false,
+                "message" to "Set a provider URL before sending a test message.",
+            )
+        }
+
+        val input = normalizeConversationMessages(messages)
+        if (input.length() == 0) {
+            return mapOf(
+                "ok" to false,
+                "message" to "Type a message before testing the model connection.",
+            )
+        }
+
+        val startedAt = System.currentTimeMillis()
+        return try {
+            val response = OpenAiResponsesClient.createTextResponse(
+                providerUrl = activeConfig.providerUrl,
+                apiKey = activeConfig.apiKey,
+                model = activeConfig.model,
+                instructions = buildConnectivityInstructions(),
+                input = input,
+            )
+            val output = response.optJSONArray("output") ?: JSONArray()
+            val reply = response.optString("output_text").ifBlank {
+                extractText(output)
+            }
+            val latencyMs = System.currentTimeMillis() - startedAt
+            if (reply.isBlank()) {
+                AgentEventBus.log("warn", "Connectivity probe returned an empty response.")
+                mapOf(
+                    "ok" to false,
+                    "message" to "Model returned an empty response.",
+                    "reply" to "",
+                    "latencyMs" to latencyMs,
+                    "model" to activeConfig.model,
+                    "providerUrl" to activeConfig.providerUrl,
+                )
+            } else {
+                AgentEventBus.log("info", "Connectivity probe completed in ${latencyMs}ms.")
+                mapOf(
+                    "ok" to true,
+                    "message" to "Model connection is healthy.",
+                    "reply" to reply,
+                    "latencyMs" to latencyMs,
+                    "model" to activeConfig.model,
+                    "providerUrl" to activeConfig.providerUrl,
+                )
+            }
+        } catch (error: Exception) {
+            val latencyMs = System.currentTimeMillis() - startedAt
+            AgentEventBus.log("error", error.message ?: error.toString())
+            mapOf(
+                "ok" to false,
+                "message" to (error.message ?: "Connectivity test failed."),
+                "latencyMs" to latencyMs,
+                "model" to activeConfig.model,
+                "providerUrl" to activeConfig.providerUrl,
+            )
+        }
+    }
+
     private fun runLoop(activeConfig: AgentConfig) {
         val input = JSONArray().put(
             JSONObject()
@@ -221,8 +292,10 @@ object AgentRuntime {
 
                 if (functionCalls.isEmpty()) {
                     finishRun(
-                        if (outputText.isNotBlank()) "completed" else "failed",
-                        outputText.ifBlank { "Model returned no tool calls." },
+                        "failed",
+                        outputText.ifBlank {
+                            "当前模型未触发任何工具调用，请确认模型和服务商支持 Responses API function calling。"
+                        },
                     )
                     return
                 }
@@ -369,6 +442,43 @@ object AgentRuntime {
             }
         }
         return parts.joinToString(" ").trim()
+    }
+
+    private fun normalizeConversationMessages(messages: List<*>): JSONArray {
+        val input = JSONArray()
+        messages.forEach { entry ->
+            val message = entry as? Map<*, *> ?: return@forEach
+            val role = message["role"]?.toString()?.trim().orEmpty()
+            val content = message["content"]?.toString()?.trim().orEmpty()
+            if (content.isBlank()) {
+                return@forEach
+            }
+            val normalizedRole = when (role) {
+                "assistant", "system" -> role
+                else -> "user"
+            }
+            input.put(
+                JSONObject()
+                    .put("role", normalizedRole)
+                    .put("content", content),
+            )
+        }
+        return input
+    }
+
+    private fun buildConnectivityInstructions(): String {
+        return """
+            你是一个用于检测模型连通性的对话助手。
+
+            目标：
+            - 自然回答用户最后一条消息，证明模型服务可用。
+            - 回复尽量简洁，通常控制在 1 到 3 句话。
+            - 如果用户明显是在测试连通性，可以直接明确回复“模型连通正常”。
+
+            限制：
+            - 不要调用工具。
+            - 不要输出多余的解释、前缀或 Markdown 标题。
+        """.trimIndent()
     }
 
     private fun buildInstructions(config: AgentConfig): String {

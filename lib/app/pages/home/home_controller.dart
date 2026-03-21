@@ -11,6 +11,40 @@ import '../../services/agent_config_store.dart';
 import '../../services/agent_bridge.dart';
 import '../../services/overlay_message_bridge.dart';
 
+class ProbeConversationMessage {
+  const ProbeConversationMessage({
+    required this.role,
+    required this.content,
+    this.includeInContext = true,
+    this.failed = false,
+  });
+
+  final String role;
+  final String content;
+  final bool includeInContext;
+  final bool failed;
+
+  bool get isUser => role == 'user';
+
+  ProbeConversationMessage copyWith({
+    String? role,
+    String? content,
+    bool? includeInContext,
+    bool? failed,
+  }) {
+    return ProbeConversationMessage(
+      role: role ?? this.role,
+      content: content ?? this.content,
+      includeInContext: includeInContext ?? this.includeInContext,
+      failed: failed ?? this.failed,
+    );
+  }
+
+  Map<String, String> toRequestMap() {
+    return <String, String>{'role': role, 'content': content};
+  }
+}
+
 class HomeController extends GetxController with WidgetsBindingObserver {
   HomeController();
 
@@ -30,11 +64,19 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final taskPromptController = TextEditingController(
     text: '读取当前答题页面并继续作答，优先使用工具，不要输出解释。',
   );
+  final connectivityInputController = TextEditingController(
+    text: '请回复“模型连通正常”，并用一句话说明你当前可以继续对话。',
+  );
 
   final autoSubmit = false.obs;
   final overlayPermissionGranted = false.obs;
   final overlayActive = false.obs;
   final isBusy = false.obs;
+  final isConnectivityTesting = false.obs;
+  final connectivityMessages = <ProbeConversationMessage>[].obs;
+  final connectivityNotice = '发送一条消息，测试当前模型是否可以正常回复。'.obs;
+  final connectivityLastOk = RxnBool();
+  final connectivityLatencyMs = RxnInt();
 
   StreamSubscription<Map<String, dynamic>>? _eventSubscription;
   StreamSubscription<dynamic>? _overlaySubscription;
@@ -66,6 +108,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     apiKeyController.dispose();
     modelController.dispose();
     taskPromptController.dispose();
+    connectivityInputController.dispose();
     super.onClose();
   }
 
@@ -270,6 +313,85 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       _setPayload(statusPayload);
       await _pushOverlayEvent('agent_status', statusPayload);
     });
+  }
+
+  Future<void> sendConnectivityMessage() async {
+    if (isConnectivityTesting.value || isBusy.value) {
+      return;
+    }
+
+    final prompt = connectivityInputController.text.trim();
+    if (prompt.isEmpty) {
+      connectivityLastOk.value = false;
+      connectivityNotice.value = '请先输入一条测试消息。';
+      _appendLog('warn', '模型连通性测试消息不能为空。');
+      return;
+    }
+
+    final saved = await saveAgentConfig(announce: false);
+    if (!saved) {
+      connectivityLastOk.value = false;
+      connectivityNotice.value = '请先完善提供商配置后再测试模型连通性。';
+      return;
+    }
+
+    final pendingIndex = connectivityMessages.length;
+    connectivityMessages.add(
+      ProbeConversationMessage(role: 'user', content: prompt),
+    );
+    connectivityInputController.clear();
+    connectivityLastOk.value = null;
+    connectivityLatencyMs.value = null;
+    connectivityNotice.value = '正在等待模型回复...';
+    isConnectivityTesting.value = true;
+
+    try {
+      final payload = await _agentBridge.sendConnectivityProbe(
+        messages: connectivityMessages
+            .where((message) => message.includeInContext)
+            .map((message) => message.toRequestMap())
+            .toList(),
+      );
+      final ok = payload['ok'] == true;
+      final reply = payload['reply']?.toString().trim() ?? '';
+      final latencyMs = _readInt(payload['latencyMs']);
+      connectivityLastOk.value = ok;
+      connectivityLatencyMs.value = latencyMs;
+      if (ok && reply.isNotEmpty) {
+        connectivityMessages.add(
+          ProbeConversationMessage(role: 'assistant', content: reply),
+        );
+        connectivityNotice.value = '模型回复成功，可继续对话。';
+        _appendLog(
+          'info',
+          '模型连通性测试成功${latencyMs == null ? '' : '，耗时 ${latencyMs}ms'}。',
+        );
+      } else {
+        _markConnectivityMessageFailed(pendingIndex);
+        final message = payload['message']?.toString().trim();
+        connectivityNotice.value = (message == null || message.isEmpty)
+            ? '模型未返回有效回复。'
+            : message;
+        connectivityLastOk.value = false;
+        _appendLog('error', '模型连通性测试失败：${connectivityNotice.value}');
+      }
+      _setPayload(payload);
+    } catch (error) {
+      _markConnectivityMessageFailed(pendingIndex);
+      connectivityLastOk.value = false;
+      connectivityNotice.value = error.toString();
+      _setPayload(<String, dynamic>{'ok': false, 'message': error.toString()});
+      _appendLog('error', '模型连通性测试失败：${error.toString()}');
+    } finally {
+      isConnectivityTesting.value = false;
+    }
+  }
+
+  void clearConnectivityConversation() {
+    connectivityMessages.clear();
+    connectivityNotice.value = '发送一条消息，测试当前模型是否可以正常回复。';
+    connectivityLastOk.value = null;
+    connectivityLatencyMs.value = null;
   }
 
   Future<void> syncOverlayState() async {
@@ -484,6 +606,17 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     );
   }
 
+  void _markConnectivityMessageFailed(int index) {
+    if (index < 0 || index >= connectivityMessages.length) {
+      return;
+    }
+    final message = connectivityMessages[index];
+    connectivityMessages[index] = message.copyWith(
+      includeInContext: false,
+      failed: true,
+    );
+  }
+
   void _appendLog(String level, String message) {
     final levelLabel = switch (level.toLowerCase()) {
       'info' => '信息',
@@ -588,5 +721,12 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       if (message != null && message.isNotEmpty) 'message': message,
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
     };
+  }
+
+  int? _readInt(dynamic value) {
+    if (value is int) {
+      return value;
+    }
+    return int.tryParse(value?.toString() ?? '');
   }
 }
