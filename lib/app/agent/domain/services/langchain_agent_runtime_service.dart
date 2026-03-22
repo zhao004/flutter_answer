@@ -286,7 +286,9 @@ System architecture:
 
 Execution rules:
 - Start by understanding the current page before taking action.
-- Prefer `get_question_context` before `get_ui_snapshot`.
+- Prefer `get_page_context` first, then `get_question_context`, and use `get_ui_snapshot` only when needed for raw node details.
+- After finishing the current question input/selection, you must attempt to advance using the `next` action when present.
+- If `next` is not explicitly listed but a progress action is likely, re-read context and try available candidate navigation actions before stopping.
 - After `click_element`, `toggle_element`, `set_text`, `scroll_screen`, or `press_global`, call `wait_for_idle` before reading the UI again.
 - If a tool fails, re-read the current context before retrying.
 - If the same strategy fails repeatedly and progress stalls, stop and return a concise blocker summary instead of looping.

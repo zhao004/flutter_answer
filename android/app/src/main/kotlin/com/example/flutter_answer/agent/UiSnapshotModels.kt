@@ -44,17 +44,49 @@ data class UiSnapshot(
     )
 }
 
+data class PageClassification(
+    val pageType: String,
+    val confidence: Double,
+    val reason: String,
+    val scores: Map<String, Double>,
+    val signals: Map<String, Any?>,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "pageType" to pageType,
+        "confidence" to confidence,
+        "reason" to reason,
+        "scores" to scores,
+        "signals" to signals,
+    )
+}
+
+data class UiRegion(
+    val region: String,
+    val bounds: List<Int>,
+    val elementIds: List<String>,
+    val confidence: Double,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "region" to region,
+        "bounds" to bounds,
+        "elementIds" to elementIds,
+        "confidence" to confidence,
+    )
+}
+
 data class QuestionOption(
     val id: String,
     val label: String,
     val text: String,
     val checked: Boolean,
+    val normalizedText: String = text,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "id" to id,
         "label" to label,
         "text" to text,
         "checked" to checked,
+        "normalizedText" to normalizedText,
     )
 }
 
@@ -74,33 +106,97 @@ data class QuestionAction(
     val id: String,
     val text: String,
     val kind: String,
+    val riskLevel: String = "normal",
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "id" to id,
         "text" to text,
         "kind" to kind,
+        "riskLevel" to riskLevel,
+    )
+}
+
+data class QuestionBlank(
+    val index: Int,
+    val hint: String,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "index" to index,
+        "hint" to hint,
+    )
+}
+
+data class QuestionAttachment(
+    val id: String,
+    val type: String,
+    val desc: String,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "id" to id,
+        "type" to type,
+        "desc" to desc,
+    )
+}
+
+data class QuestionCacheProbe(
+    val hit: Boolean,
+    val seenCount: Int,
+    val fingerprint: String,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "hit" to hit,
+        "seenCount" to seenCount,
+        "fingerprint" to fingerprint,
     )
 }
 
 data class QuestionContext(
     val screenPackage: String?,
+    val pageType: String,
+    val pageTypeConfidence: Double,
+    val pageTypeReason: String,
     val questionType: String,
     val questionTypeLabel: String,
     val questionTypeReason: String,
+    val questionIndex: Int?,
     val question: String,
+    val normalizedQuestion: String,
     val options: List<QuestionOption>,
     val inputFields: List<InputFieldRef>,
     val actions: List<QuestionAction>,
+    val blanks: List<QuestionBlank>,
+    val attachments: List<QuestionAttachment>,
+    val required: Boolean,
+    val confidence: Double,
+    val needConfirm: Boolean,
+    val fingerprint: String,
+    val cacheProbe: QuestionCacheProbe,
+    val regions: List<UiRegion>,
+    val pageScores: Map<String, Double>,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "screenPackage" to screenPackage,
+        "pageType" to pageType,
+        "pageTypeConfidence" to pageTypeConfidence,
+        "pageTypeReason" to pageTypeReason,
         "questionType" to questionType,
         "questionTypeLabel" to questionTypeLabel,
         "questionTypeReason" to questionTypeReason,
+        "questionIndex" to questionIndex,
         "question" to question,
+        "normalizedQuestion" to normalizedQuestion,
         "options" to options.map(QuestionOption::toMap),
         "inputFields" to inputFields.map(InputFieldRef::toMap),
         "actions" to actions.map(QuestionAction::toMap),
+        "blanks" to blanks.map(QuestionBlank::toMap),
+        "attachments" to attachments.map(QuestionAttachment::toMap),
+        "required" to required,
+        "confidence" to confidence,
+        "needConfirm" to needConfirm,
+        "fingerprint" to fingerprint,
+        "cache" to cacheProbe.toMap(),
+        "regions" to regions.map(UiRegion::toMap),
+        "pageScores" to pageScores,
     )
 }
 
@@ -114,4 +210,8 @@ data class NodeLocator(
     val editable: Boolean,
     val checkable: Boolean,
     val scrollable: Boolean,
+    val parentClassName: String? = null,
+    val siblingTextHints: List<String> = emptyList(),
+    val region: String? = null,
+    val pageType: String? = null,
 )

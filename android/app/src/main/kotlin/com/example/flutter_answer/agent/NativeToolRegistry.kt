@@ -20,6 +20,19 @@ object NativeToolRegistry {
         },
         object : NativeTool {
             override val definition = NativeToolDefinition(
+                name = "get_page_context",
+                description = "Classify the current page and return region segmentation for title, question, options, input, footer, and popup areas.",
+                inputSchema = emptySchema(),
+                idempotent = true,
+                category = "inspection",
+            )
+
+            override fun execute(arguments: Map<String, Any?>): Map<String, Any?> {
+                return AccessibilityAgent.getPageContext()
+            }
+        },
+        object : NativeTool {
+            override val definition = NativeToolDefinition(
                 name = "get_question_context",
                 description = "Extract a structured question context from the current screen. Prefer this before get_ui_snapshot.",
                 inputSchema = emptySchema(),
@@ -29,6 +42,28 @@ object NativeToolRegistry {
 
             override fun execute(arguments: Map<String, Any?>): Map<String, Any?> {
                 return AccessibilityAgent.getQuestionContext()
+            }
+        },
+        object : NativeTool {
+            override val definition = NativeToolDefinition(
+                name = "get_recognition_history",
+                description = "Return recent recognition traces and question fingerprint cache for replay and diagnosis.",
+                inputSchema = objectSchema(
+                    properties = mapOf(
+                        "limit" to integerSchema(
+                            description = "Maximum number of records to return.",
+                            minimum = 1,
+                            maximum = 100,
+                        ),
+                    ),
+                    required = emptyList(),
+                ),
+                idempotent = true,
+                category = "diagnostic",
+            )
+
+            override fun execute(arguments: Map<String, Any?>): Map<String, Any?> {
+                return AccessibilityAgent.getRecognitionHistory(arguments.int("limit"))
             }
         },
         object : NativeTool {
