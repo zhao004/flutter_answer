@@ -85,6 +85,8 @@ data class QuestionAction(
 data class QuestionContext(
     val screenPackage: String?,
     val questionType: String,
+    val questionTypeLabel: String,
+    val questionTypeReason: String,
     val question: String,
     val options: List<QuestionOption>,
     val inputFields: List<InputFieldRef>,
@@ -93,6 +95,8 @@ data class QuestionContext(
     fun toMap(): Map<String, Any?> = mapOf(
         "screenPackage" to screenPackage,
         "questionType" to questionType,
+        "questionTypeLabel" to questionTypeLabel,
+        "questionTypeReason" to questionTypeReason,
         "question" to question,
         "options" to options.map(QuestionOption::toMap),
         "inputFields" to inputFields.map(InputFieldRef::toMap),

@@ -20,6 +20,11 @@ class LangChainAgentRuntimeService {
   LangChainAgentRuntimeService({required AgentPlatformGateway platformGateway})
     : _platformGateway = platformGateway;
 
+  static const int _executorMaxIterations = 100;
+  static const Duration _executorMaxExecutionTime = Duration(minutes: 1);
+  static const String _executorLimitStopMessage =
+      'Agent stopped due to iteration limit or time limit.';
+
   final AgentPlatformGateway _platformGateway;
 
   bool _stopRequested = false;
@@ -132,10 +137,7 @@ class LangChainAgentRuntimeService {
                   updatedAt: DateTime.now().millisecondsSinceEpoch,
                 );
                 onStatus(latestState);
-                onLog(
-                  result.ok ? 'info' : 'warn',
-                  '[${definition.name}] ${result.message ?? '工具执行完成。'}',
-                );
+                // 原生层会输出每次工具结果日志，这里仅保留状态更新，避免重复刷屏。
               },
             ),
           )
@@ -144,8 +146,8 @@ class LangChainAgentRuntimeService {
       final agent = ToolsAgent.fromLLMAndTools(llm: model, tools: tools);
       final executor = AgentExecutor(
         agent: agent,
-        maxIterations: 12,
-        maxExecutionTime: const Duration(minutes: 2),
+        maxIterations: _executorMaxIterations,
+        maxExecutionTime: _executorMaxExecutionTime,
       );
 
       latestState = latestState.copyWith(
@@ -169,6 +171,22 @@ class LangChainAgentRuntimeService {
           lastModelText: latestState.lastModelText,
           updatedAt: DateTime.now().millisecondsSinceEpoch,
         );
+      }
+
+      if (_isExecutorStoppedByLimit(finalText)) {
+        final message = _buildExecutorLimitMessage(step: toolStep);
+        final stoppedByLimit = AgentRunState(
+          running: false,
+          status: 'stopped',
+          step: toolStep,
+          message: message,
+          lastTool: latestState.lastTool,
+          lastModelText: latestState.lastModelText,
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        );
+        onLog('warn', message);
+        onStatus(stoppedByLimit);
+        return stoppedByLimit;
       }
 
       final completed = AgentRunState(
@@ -197,15 +215,17 @@ class LangChainAgentRuntimeService {
       onStatus(stopped);
       return stopped;
     } catch (error) {
+      final normalizedMessage = _normalizeRuntimeError(error);
       final failed = AgentRunState(
         running: false,
         status: 'failed',
         step: toolStep,
-        message: error.toString(),
+        message: normalizedMessage,
         lastTool: latestState.lastTool,
         lastModelText: latestState.lastModelText,
         updatedAt: DateTime.now().millisecondsSinceEpoch,
       );
+      onLog('error', normalizedMessage);
       onStatus(failed);
       return failed;
     }
@@ -269,6 +289,7 @@ Execution rules:
 - Prefer `get_question_context` before `get_ui_snapshot`.
 - After `click_element`, `toggle_element`, `set_text`, `scroll_screen`, or `press_global`, call `wait_for_idle` before reading the UI again.
 - If a tool fails, re-read the current context before retrying.
+- If the same strategy fails repeatedly and progress stalls, stop and return a concise blocker summary instead of looping.
 - Keep actions minimal and deterministic.
 - If auto submit is disabled, stop at the submit page and explain that manual confirmation is required.
 - If auto submit is enabled, you may submit only when the submit intent is clear from the UI.
@@ -314,6 +335,25 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
     if (config.apiKey.trim().isEmpty) {
       throw StateError('请先填写提供商密钥。');
     }
+  }
+
+  bool _isExecutorStoppedByLimit(String output) {
+    return output.trim() == _executorLimitStopMessage;
+  }
+
+  String _buildExecutorLimitMessage({required int step}) {
+    return 'Agent 已达到执行保护上限（最多 $_executorMaxIterations 轮或 ${_executorMaxExecutionTime.inMinutes} 分钟，当前执行 $step 步）并自动停止。请先确认题目页面已稳定，再缩小任务范围后重试。';
+  }
+
+  String _normalizeRuntimeError(Object error) {
+    final raw = error.toString().trim();
+    if (raw.isEmpty) {
+      return 'Agent 运行失败：未知错误。';
+    }
+    if (_isExecutorStoppedByLimit(raw)) {
+      return _buildExecutorLimitMessage(step: 0);
+    }
+    return raw;
   }
 }
 

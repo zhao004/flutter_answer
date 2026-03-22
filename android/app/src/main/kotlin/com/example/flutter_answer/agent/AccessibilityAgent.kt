@@ -71,11 +71,16 @@ object AccessibilityAgent {
             ?: return reportFailure("getQuestionContext", "未获取到可用节点，无法提取题目上下文。", "window_unavailable")
         val snapshot = dumpUiTree(root)
         val context = QuestionExtractor.extract(snapshot)
+        val questionPreview = context.question.take(80).ifBlank { "（题干为空）" }
         val payload = success(
-            message = "已提取题目上下文，识别到 ${context.options.size} 个选项、${context.actions.size} 个操作按钮。",
+            message = "已提取题目上下文，当前题型：${context.questionTypeLabel}（${context.questionType}），识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框、${context.actions.size} 个操作按钮。",
             extra = mapOf("context" to context.toMap()),
         )
         AgentEventBus.log("info", payload["message"] as String)
+        AgentEventBus.log(
+            "info",
+            "题型识别依据：${context.questionTypeReason} 题干摘要：$questionPreview",
+        )
         AgentEventBus.toolResult("getQuestionContext", true, payload)
         return payload
     }

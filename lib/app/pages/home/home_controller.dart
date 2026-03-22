@@ -12,45 +12,10 @@ import '../../agent/data/agent_config_store.dart';
 import '../../agent/data/agent_platform_gateway.dart';
 import '../../agent/domain/models/agent_config.dart';
 import '../../agent/domain/models/agent_run_state.dart';
-import '../../agent/domain/models/connectivity_probe_result.dart';
 import '../../agent/domain/models/native_platform_event.dart';
 import '../../agent/domain/models/native_tool_execution.dart';
 import '../../agent/domain/services/langchain_agent_runtime_service.dart';
 import '../../services/overlay_message_bridge.dart';
-
-class ProbeConversationMessage {
-  const ProbeConversationMessage({
-    required this.role,
-    required this.content,
-    this.includeInContext = true,
-    this.failed = false,
-  });
-
-  final String role;
-  final String content;
-  final bool includeInContext;
-  final bool failed;
-
-  bool get isUser => role == 'user';
-
-  ProbeConversationMessage copyWith({
-    String? role,
-    String? content,
-    bool? includeInContext,
-    bool? failed,
-  }) {
-    return ProbeConversationMessage(
-      role: role ?? this.role,
-      content: content ?? this.content,
-      includeInContext: includeInContext ?? this.includeInContext,
-      failed: failed ?? this.failed,
-    );
-  }
-
-  Map<String, String> toRequestMap() {
-    return <String, String>{'role': role, 'content': content};
-  }
-}
 
 class HomeController extends GetxController with WidgetsBindingObserver {
   HomeController({
@@ -79,19 +44,12 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     text:
         'Read the current question page, answer carefully, prefer tools, and stop at the submit page unless auto submit is enabled.',
   );
-  final connectivityInputController = TextEditingController(
-    text: '请回复“模型连通正常”，并用一句话说明你当前可以继续对话。',
-  );
 
   final autoSubmit = false.obs;
+  final overlayDragFrameThrottleEnabled = true.obs;
   final overlayPermissionGranted = false.obs;
   final overlayActive = false.obs;
   final isBusy = false.obs;
-  final isConnectivityTesting = false.obs;
-  final connectivityMessages = <ProbeConversationMessage>[].obs;
-  final connectivityNotice = '发送一条消息，测试当前模型是否可以正常回复。'.obs;
-  final connectivityLastOk = RxnBool();
-  final connectivityLatencyMs = RxnInt();
 
   StreamSubscription<NativePlatformEvent>? _eventSubscription;
   StreamSubscription<dynamic>? _overlaySubscription;
@@ -102,6 +60,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   bool _systemSettingsFlowActive = false;
   String _overlayWindowMode = 'expanded';
   OverlayPosition _overlayWindowPosition = const OverlayPosition(12, 120);
+  static const int _overlayDragFrameThrottleIntervalMs = 16;
+  String? _lastLogLine;
+  int? _lastLogAtMs;
 
   bool get agentRunning => agentRunStatus['running'] == true;
 
@@ -131,7 +92,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     apiKeyController.dispose();
     modelController.dispose();
     taskPromptController.dispose();
-    connectivityInputController.dispose();
     super.onClose();
   }
 
@@ -371,69 +331,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     );
   }
 
-  Future<void> sendConnectivityMessage() async {
-    if (isConnectivityTesting.value || isBusy.value || agentRunning) {
-      return;
-    }
-
-    final prompt = connectivityInputController.text.trim();
-    if (prompt.isEmpty) {
-      connectivityLastOk.value = false;
-      connectivityNotice.value = '请先输入一条测试消息。';
-      _appendLog('warn', '模型连通性测试消息不能为空。');
-      return;
-    }
-
-    final saved = await saveAgentConfig(announce: false);
-    if (!saved) {
-      connectivityLastOk.value = false;
-      connectivityNotice.value = '请先补全提供商配置后再测试模型连通性。';
-      return;
-    }
-
-    if (!_currentConfig.hasApiKey) {
-      connectivityLastOk.value = false;
-      connectivityNotice.value = '请先输入 API key。';
-      return;
-    }
-
-    final pendingIndex = connectivityMessages.length;
-    connectivityMessages.add(
-      ProbeConversationMessage(role: 'user', content: prompt),
-    );
-    connectivityInputController.clear();
-    connectivityLastOk.value = null;
-    connectivityLatencyMs.value = null;
-    connectivityNotice.value = '正在等待模型回复...';
-    isConnectivityTesting.value = true;
-
-    try {
-      final payload = await _runtimeService.sendConnectivityProbe(
-        config: _currentConfig,
-        messages: connectivityMessages
-            .where((message) => message.includeInContext)
-            .map((message) => message.toRequestMap())
-            .toList(),
-      );
-      _handleConnectivityResult(payload, pendingIndex);
-    } catch (error) {
-      _markConnectivityMessageFailed(pendingIndex);
-      connectivityLastOk.value = false;
-      connectivityNotice.value = error.toString();
-      _setPayload(<String, dynamic>{'ok': false, 'message': error.toString()});
-      _appendLog('error', '模型连通性测试失败：${error.toString()}');
-    } finally {
-      isConnectivityTesting.value = false;
-    }
-  }
-
-  void clearConnectivityConversation() {
-    connectivityMessages.clear();
-    connectivityNotice.value = '发送一条消息，测试当前模型是否可以正常回复。';
-    connectivityLastOk.value = null;
-    connectivityLatencyMs.value = null;
-  }
-
   Future<void> syncOverlayState() async {
     final granted = await FlutterOverlayWindow.isPermissionGranted() == true;
     final active = await FlutterOverlayWindow.isActive() == true;
@@ -526,9 +423,25 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     }
   }
 
+  Future<void> toggleOverlayDragFrameThrottle(bool enabled) async {
+    if (overlayDragFrameThrottleEnabled.value == enabled) {
+      return;
+    }
+    overlayDragFrameThrottleEnabled.value = enabled;
+    _appendLog(
+      'info',
+      enabled ? '已开启悬浮窗拖动帧率节流（16ms）。' : '已关闭悬浮窗拖动帧率节流。',
+    );
+    await _pushOverlayState();
+  }
+
   void _handleNativeEvent(NativePlatformEvent event) {
     if (event.type == 'log') {
-      _appendLog(event.level ?? 'info', event.message ?? '');
+      _appendLog(
+        event.level ?? 'info',
+        event.message ?? '',
+        timestampMs: event.timestamp,
+      );
       return;
     }
 
@@ -711,6 +624,8 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       'width': geometry.width,
       'height': geometry.height,
       'active': overlayActive.value,
+      'dragFrameThrottleEnabled': overlayDragFrameThrottleEnabled.value,
+      'dragFrameThrottleIntervalMs': _overlayDragFrameThrottleIntervalMs,
     };
   }
 
@@ -862,51 +777,29 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     );
   }
 
-  void _handleConnectivityResult(
-    ConnectivityProbeResult payload,
-    int pendingIndex,
-  ) {
-    connectivityLastOk.value = payload.ok;
-    connectivityLatencyMs.value = payload.latencyMs;
-
-    if (payload.ok && payload.reply.trim().isNotEmpty) {
-      connectivityMessages.add(
-        ProbeConversationMessage(role: 'assistant', content: payload.reply),
-      );
-      connectivityNotice.value = '模型回复成功，可继续对话。';
-      _appendLog(
-        'info',
-        '模型连通性测试成功${payload.latencyMs == null ? '' : '，耗时 ${payload.latencyMs}ms'}。',
-      );
-    } else {
-      _markConnectivityMessageFailed(pendingIndex);
-      connectivityNotice.value = payload.message;
-      connectivityLastOk.value = false;
-      _appendLog('error', '模型连通性测试失败：${payload.message}');
-    }
-
-    _setPayload(payload.toMap());
-  }
-
-  void _markConnectivityMessageFailed(int index) {
-    if (index < 0 || index >= connectivityMessages.length) {
+  void _appendLog(String level, String message, {int? timestampMs}) {
+    final normalizedMessage = message.trim();
+    if (normalizedMessage.isEmpty) {
       return;
     }
-    final message = connectivityMessages[index];
-    connectivityMessages[index] = message.copyWith(
-      includeInContext: false,
-      failed: true,
-    );
-  }
 
-  void _appendLog(String level, String message) {
+    final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
+    final timeLabel = _formatLogTime(DateTime.fromMillisecondsSinceEpoch(nowMs));
     final levelLabel = switch (level.toLowerCase()) {
       'info' => '信息',
       'warn' => '警告',
       'error' => '错误',
       _ => level.toUpperCase(),
     };
-    final line = '[$levelLabel] $message';
+    final line = '[$timeLabel][$levelLabel] $normalizedMessage';
+    // 部分原生日志可能在短时间内重复上报，这里去重避免日志刷屏。
+    if (_lastLogLine == line &&
+        _lastLogAtMs != null &&
+        nowMs - _lastLogAtMs! < 600) {
+      return;
+    }
+    _lastLogLine = line;
+    _lastLogAtMs = nowMs;
     logs.insert(0, line);
     if (logs.length > 60) {
       logs.removeRange(60, logs.length);
@@ -918,6 +811,13 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         'line': line,
       }),
     );
+  }
+
+  String _formatLogTime(DateTime time) {
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
+    final second = time.second.toString().padLeft(2, '0');
+    return '$hour:$minute:$second';
   }
 
   Future<void> _broadcastOverlaySnapshot() {

@@ -77,6 +77,12 @@ class _OverlayViewState extends State<OverlayView> {
 
   OverlayPosition? _dragStartPosition;
   Offset _dragDelta = Offset.zero;
+  OverlayPosition? _pendingBubblePosition;
+  bool _bubbleMoveInFlight = false;
+  bool _dragFrameThrottleEnabled = true;
+  int _dragFrameThrottleIntervalMs = 16;
+  Timer? _bubbleMoveThrottleTimer;
+  int _lastBubbleMoveAtMs = 0;
 
   bool get _running => _agentRunStatus['running'] == true;
 
@@ -108,6 +114,7 @@ class _OverlayViewState extends State<OverlayView> {
   void dispose() {
     _overlaySubscription?.cancel();
     _overlayPortSubscription?.cancel();
+    _bubbleMoveThrottleTimer?.cancel();
     _overlayReceivePort.close();
     IsolateNameServer.removePortNameMapping(
       OverlayMessageBridge.overlayPortName,
@@ -174,8 +181,7 @@ class _OverlayViewState extends State<OverlayView> {
         behavior: HitTestBehavior.opaque,
         onTap: () => unawaited(_changeMode(_OverlayMode.expanded)),
         onPanStart: (_) => _handleBubblePanStart(),
-        onPanUpdate: (details) =>
-            unawaited(_handleBubblePanUpdate(details.delta)),
+        onPanUpdate: (details) => _handleBubblePanUpdate(details.delta),
         onPanEnd: (_) => unawaited(_snapBubbleToEdge()),
         child: Center(
           child: SizedBox(
@@ -185,29 +191,29 @@ class _OverlayViewState extends State<OverlayView> {
               clipBehavior: Clip.none,
               children: [
                 Positioned.fill(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: [
-                          bubbleColor,
-                          bubbleColor.withValues(alpha: 0.78),
-                        ],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x33000000),
-                          blurRadius: 22,
-                          offset: Offset(0, 10),
+                  child: PhysicalModel(
+                    color: bubbleColor,
+                    shape: BoxShape.circle,
+                    clipBehavior: Clip.antiAlias,
+                    elevation: 6,
+                    shadowColor: const Color(0x33000000),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: [
+                            bubbleColor,
+                            bubbleColor.withValues(alpha: 0.78),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
                         ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.smart_toy_outlined,
-                      color: Colors.white,
-                      size: 28,
+                      ),
+                      child: const Icon(
+                        Icons.smart_toy_outlined,
+                        color: Colors.white,
+                        size: 28,
+                      ),
                     ),
                   ),
                 ),
@@ -555,9 +561,12 @@ class _OverlayViewState extends State<OverlayView> {
   void _handleBubblePanStart() {
     _dragStartPosition = _overlayPosition;
     _dragDelta = Offset.zero;
+    _pendingBubblePosition = null;
+    _bubbleMoveThrottleTimer?.cancel();
+    _bubbleMoveThrottleTimer = null;
   }
 
-  Future<void> _handleBubblePanUpdate(Offset delta) async {
+  void _handleBubblePanUpdate(Offset delta) {
     final start = _dragStartPosition;
     if (start == null) {
       return;
@@ -568,16 +577,19 @@ class _OverlayViewState extends State<OverlayView> {
       OverlayPosition(start.x + _dragDelta.dx, start.y + _dragDelta.dy),
       _dimensionsFor(_OverlayMode.collapsed),
     );
-    await FlutterOverlayWindow.moveOverlay(target);
-    if (!mounted) {
+    if (_isPositionClose(_overlayPosition, target)) {
       return;
     }
-    setState(() {
-      _overlayPosition = target;
-    });
+    // 记录最新目标位置并串行提交，避免高频手势触发并发 moveOverlay 导致抖动与闪动。
+    _overlayPosition = target;
+    _pendingBubblePosition = target;
+    _scheduleBubbleMoveFlush();
   }
 
   Future<void> _snapBubbleToEdge() async {
+    _bubbleMoveThrottleTimer?.cancel();
+    _bubbleMoveThrottleTimer = null;
+    await _flushBubbleMoveQueue(forceImmediate: true);
     final dimensions = _dimensionsFor(_OverlayMode.collapsed);
     final screen = _logicalScreenSize();
     final targetX =
@@ -588,17 +600,81 @@ class _OverlayViewState extends State<OverlayView> {
       OverlayPosition(targetX, _overlayPosition.y),
       dimensions,
     );
-    await FlutterOverlayWindow.moveOverlay(target);
-    if (!mounted) {
-      return;
+    if (!_isPositionClose(_overlayPosition, target)) {
+      await FlutterOverlayWindow.moveOverlay(target);
     }
-    setState(() {
-      _overlayPosition = target;
-    });
+    _overlayPosition = target;
+    _dragStartPosition = null;
+    _pendingBubblePosition = null;
     await _sendCommand(
       'move_overlay',
       arguments: <String, dynamic>{'x': target.x, 'y': target.y},
     );
+  }
+
+  void _scheduleBubbleMoveFlush() {
+    if (_bubbleMoveInFlight) {
+      return;
+    }
+    if (!_dragFrameThrottleEnabled) {
+      unawaited(_flushBubbleMoveQueue(forceImmediate: true));
+      return;
+    }
+    if (_bubbleMoveThrottleTimer?.isActive == true) {
+      return;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final elapsed = now - _lastBubbleMoveAtMs;
+    final delayMs = (elapsed >= _dragFrameThrottleIntervalMs)
+        ? 0
+        : (_dragFrameThrottleIntervalMs - elapsed);
+    _bubbleMoveThrottleTimer = Timer(Duration(milliseconds: delayMs), () {
+      _bubbleMoveThrottleTimer = null;
+      unawaited(_flushBubbleMoveQueue());
+    });
+  }
+
+  Future<void> _flushBubbleMoveQueue({bool forceImmediate = false}) async {
+    if (_bubbleMoveInFlight) {
+      return;
+    }
+    final target = _pendingBubblePosition;
+    if (target == null) {
+      return;
+    }
+    if (!forceImmediate && _dragFrameThrottleEnabled) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final elapsed = now - _lastBubbleMoveAtMs;
+      if (elapsed < _dragFrameThrottleIntervalMs) {
+        _scheduleBubbleMoveFlush();
+        return;
+      }
+    }
+
+    _bubbleMoveInFlight = true;
+    _pendingBubblePosition = null;
+    try {
+      await FlutterOverlayWindow.moveOverlay(target);
+      _lastBubbleMoveAtMs = DateTime.now().millisecondsSinceEpoch;
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        // 仅在移动失败时写日志，避免拖动期间触发多余重建。
+        _appendOverlayLog('move overlay failed: $error');
+      });
+    } finally {
+      _bubbleMoveInFlight = false;
+    }
+    if (_pendingBubblePosition != null) {
+      _scheduleBubbleMoveFlush();
+    }
+  }
+
+  bool _isPositionClose(OverlayPosition a, OverlayPosition b) {
+    // 浮点坐标允许极小抖动，避免重复提交几乎相同的位置导致系统层闪烁。
+    return (a.x - b.x).abs() < 0.5 && (a.y - b.y).abs() < 0.5;
   }
 
   _OverlayDimensions _dimensionsFor(_OverlayMode mode) {
@@ -782,13 +858,36 @@ class _OverlayViewState extends State<OverlayView> {
     if (x != null && y != null) {
       _overlayPosition = OverlayPosition(x, y);
     }
+
+    final throttleEnabled = _readBool(state['dragFrameThrottleEnabled']);
+    if (throttleEnabled != null) {
+      final changed = _dragFrameThrottleEnabled != throttleEnabled;
+      _dragFrameThrottleEnabled = throttleEnabled;
+      if (changed && !_dragFrameThrottleEnabled) {
+        // 关闭节流后立即消费待移动位置，避免仍被旧定时器延后造成拖动迟滞。
+        _bubbleMoveThrottleTimer?.cancel();
+        _bubbleMoveThrottleTimer = null;
+        unawaited(_flushBubbleMoveQueue(forceImmediate: true));
+      }
+    }
+    final throttleIntervalMs = _readInt(state['dragFrameThrottleIntervalMs']);
+    if (throttleIntervalMs != null) {
+      // 16ms 约等于 60fps，这里限定上下界避免异常值导致拖动行为失控。
+      _dragFrameThrottleIntervalMs = throttleIntervalMs.clamp(8, 64).toInt();
+    }
   }
 
   void _appendOverlayLog(String line) {
-    if (line.trim().isEmpty) {
+    final normalizedLine = line.trim();
+    if (normalizedLine.isEmpty) {
       return;
     }
-    _logs = <String>[line, ..._logs].take(_maxLogLines).toList(growable: false);
+    final formattedLine = _hasTimePrefix(normalizedLine)
+        ? normalizedLine
+        : '[${_formatLogTime(DateTime.now())}][调试] $normalizedLine';
+    _logs = <String>[formattedLine, ..._logs]
+        .take(_maxLogLines)
+        .toList(growable: false);
   }
 
   Map<String, dynamic>? _normalizeEvent(dynamic rawEvent) {
@@ -836,6 +935,41 @@ class _OverlayViewState extends State<OverlayView> {
       return value.toDouble();
     }
     return double.tryParse(value?.toString() ?? '');
+  }
+
+  int? _readInt(dynamic value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  bool? _readBool(dynamic value) {
+    if (value is bool) {
+      return value;
+    }
+    final normalized = value?.toString().trim().toLowerCase();
+    if (normalized == 'true') {
+      return true;
+    }
+    if (normalized == 'false') {
+      return false;
+    }
+    return null;
+  }
+
+  bool _hasTimePrefix(String line) {
+    return RegExp(r'^\[\d{2}:\d{2}:\d{2}\]').hasMatch(line);
+  }
+
+  String _formatLogTime(DateTime time) {
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
+    final second = time.second.toString().padLeft(2, '0');
+    return '$hour:$minute:$second';
   }
 }
 
