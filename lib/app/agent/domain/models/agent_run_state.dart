@@ -22,7 +22,7 @@ class AgentRunState {
       running: false,
       status: 'idle',
       step: 0,
-      message: 'Idle.',
+      message: '空闲。',
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
   }

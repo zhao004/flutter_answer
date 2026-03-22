@@ -60,6 +60,16 @@ object AgentEventBus : EventChannel.StreamHandler {
         )
     }
 
+    fun serviceStatus(payload: Map<String, Any?>) {
+        send(
+            mapOf(
+                "type" to "service_status",
+                "payload" to payload,
+                "timestamp" to System.currentTimeMillis(),
+            ),
+        )
+    }
+
     private fun send(event: Map<String, Any?>) {
         if (listeners.isEmpty()) {
             if (backlog.size >= 50) {

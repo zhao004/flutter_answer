@@ -10,7 +10,7 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../../services/agent_diagnostic_hint.dart';
 import '../../services/overlay_message_bridge.dart';
 
-enum _OverlayWindowMode { compact, standard, expanded }
+enum _OverlayMode { collapsed, expanded }
 
 String _runStatusLabel(String status) {
   switch (status) {
@@ -28,6 +28,8 @@ String _runStatusLabel(String status) {
       return '失败';
     case 'stopped':
       return '已停止';
+    case 'stopping':
+      return '停止中';
     default:
       return status;
   }
@@ -41,7 +43,7 @@ class OverlayApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0B5D5B)),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0C655F)),
         scaffoldBackgroundColor: Colors.transparent,
         useMaterial3: true,
       ),
@@ -58,16 +60,38 @@ class OverlayView extends StatefulWidget {
 }
 
 class _OverlayViewState extends State<OverlayView> {
+  static const double _edgeMargin = 12;
+  static const int _maxLogLines = 60;
+
   final ReceivePort _overlayReceivePort = ReceivePort();
 
   StreamSubscription<dynamic>? _overlaySubscription;
   StreamSubscription<dynamic>? _overlayPortSubscription;
+
   Map<String, dynamic> _serviceStatus = const <String, dynamic>{};
   Map<String, dynamic> _agentConfig = const <String, dynamic>{};
   Map<String, dynamic> _agentRunStatus = const <String, dynamic>{};
-  _OverlayWindowMode _windowMode = _OverlayWindowMode.standard;
+  List<String> _logs = const <String>[];
+  String _lastPayload = '{}';
+  _OverlayMode _mode = _OverlayMode.expanded;
+  OverlayPosition _overlayPosition = const OverlayPosition(12, 120);
+
+  OverlayPosition? _dragStartPosition;
+  Offset _dragDelta = Offset.zero;
 
   bool get _running => _agentRunStatus['running'] == true;
+
+  String get _currentPackageName {
+    final value = _serviceStatus['currentPackageName']?.toString().trim() ?? '';
+    if (value.isEmpty) {
+      return '未识别前台应用';
+    }
+    return value;
+  }
+
+  bool get _accessibilityEnabled => _serviceStatus['enabled'] == true;
+
+  bool get _hasActiveWindow => _serviceStatus['hasActiveWindow'] == true;
 
   @override
   void initState() {
@@ -78,7 +102,6 @@ class _OverlayViewState extends State<OverlayView> {
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_syncSnapshot());
-      unawaited(_applyWindowMode(_windowMode));
     });
   }
 
@@ -106,368 +129,25 @@ class _OverlayViewState extends State<OverlayView> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final enabled = _serviceStatus['enabled'] == true;
-    final hasWindow = _serviceStatus['hasActiveWindow'] == true;
-    final model = _agentConfig['model']?.toString() ?? '未设置';
-    final providerUrl = _agentConfig['providerUrl']?.toString() ?? '';
-    final status = _runStatusLabel(
-      _agentRunStatus['status']?.toString() ?? 'idle',
-    );
-    final message = _agentRunStatus['message']?.toString() ?? '就绪';
-    final hint = resolveAgentDiagnosticHint(
-      serviceStatus: _serviceStatus,
-      agentConfig: _agentConfig,
-      agentRunStatus: _agentRunStatus,
-    );
-    final hintColor = switch (hint?.severity) {
-      AgentDiagnosticSeverity.info => const Color(0xFF0B5D5B),
-      AgentDiagnosticSeverity.warning => const Color(0xFF9A6700),
-      AgentDiagnosticSeverity.error => const Color(0xFFB3261E),
-      null => const Color(0xFF0B5D5B),
-    };
-    final hintIcon = switch (hint?.severity) {
-      AgentDiagnosticSeverity.info => Icons.info_outline,
-      AgentDiagnosticSeverity.warning => Icons.warning_amber_outlined,
-      AgentDiagnosticSeverity.error => Icons.error_outline,
-      null => Icons.info_outline,
-    };
-
     return Material(
       color: Colors.transparent,
       child: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final isCompact =
-                _windowMode == _OverlayWindowMode.compact ||
-                constraints.maxHeight < 300;
-            final showStatusChips = !isCompact && constraints.maxHeight >= 340;
-            final showConfig =
-                _windowMode == _OverlayWindowMode.expanded &&
-                constraints.maxHeight >= 420;
-            final denseActions = constraints.maxWidth < 360;
-            final cardWidth = _cardMaxWidth(constraints.maxWidth);
-            final viewLabel = switch (_windowMode) {
-              _OverlayWindowMode.compact => '紧凑视图',
-              _OverlayWindowMode.standard => '常规视图',
-              _OverlayWindowMode.expanded => '放大视图',
-            };
+            final renderCollapsed =
+                _mode == _OverlayMode.collapsed ||
+                constraints.maxHeight < 240 ||
+                constraints.maxWidth < 220;
 
             return Align(
-              alignment: Alignment.topCenter,
-              child: Container(
-                width: cardWidth,
-                constraints: BoxConstraints(maxHeight: constraints.maxHeight),
-                margin: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFFF8F5EE), Color(0xFFF0F7F6)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(isCompact ? 22 : 26),
-                  border: Border.all(color: const Color(0x1A173B3A)),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x33000000),
-                      blurRadius: 24,
-                      offset: Offset(0, 12),
-                    ),
-                  ],
-                ),
-                child: Padding(
-                  padding: EdgeInsets.all(
-                    isCompact
-                        ? 12
-                        : denseActions
-                        ? 14
-                        : 16,
-                  ),
-                  child: DefaultTextStyle(
-                    style:
-                        theme.textTheme.bodyMedium?.copyWith(
-                          color: const Color(0xFF173B3A),
-                        ) ??
-                        const TextStyle(color: Color(0xFF173B3A)),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '答题代理悬浮窗',
-                                    style: theme.textTheme.titleMedium
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.w800,
-                                          color: const Color(0xFF123332),
-                                        ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '$viewLabel · 拖动顶部空白区域移动',
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: const Color(0xFF58706E),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton.filledTonal(
-                              tooltip: '缩小',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () =>
-                                  _applyWindowMode(_OverlayWindowMode.compact),
-                              icon: Icon(
-                                Icons.remove,
-                                color: _windowMode == _OverlayWindowMode.compact
-                                    ? theme.colorScheme.primary
-                                    : null,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            IconButton.filledTonal(
-                              tooltip: '常规',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () =>
-                                  _applyWindowMode(_OverlayWindowMode.standard),
-                              icon: Icon(
-                                Icons.crop_square,
-                                color:
-                                    _windowMode == _OverlayWindowMode.standard
-                                    ? theme.colorScheme.primary
-                                    : null,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            IconButton.filledTonal(
-                              tooltip: '放大',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () =>
-                                  _applyWindowMode(_OverlayWindowMode.expanded),
-                              icon: Icon(
-                                Icons.open_in_full,
-                                color:
-                                    _windowMode == _OverlayWindowMode.expanded
-                                    ? theme.colorScheme.primary
-                                    : null,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            IconButton(
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () =>
-                                  FlutterOverlayWindow.closeOverlay(),
-                              icon: const Icon(Icons.close),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFEEF5F4),
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                width: 34,
-                                height: 34,
-                                decoration: BoxDecoration(
-                                  color: _running
-                                      ? const Color(0xFFF2C078)
-                                      : const Color(0xFFB7D8D4),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Icon(
-                                  _running
-                                      ? Icons.smart_toy_outlined
-                                      : Icons.pause_circle_outline,
-                                  color: const Color(0xFF123332),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '当前状态：$status',
-                                      style: theme.textTheme.labelLarge
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      message,
-                                      maxLines: isCompact ? 2 : 3,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(
-                                            color: const Color(0xFF4A6260),
-                                          ),
-                                    ),
-                                    if (hint != null) ...[
-                                      const SizedBox(height: 8),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 8,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: hintColor.withValues(
-                                            alpha: 0.10,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Icon(
-                                              hintIcon,
-                                              size: 16,
-                                              color: hintColor,
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Expanded(
-                                              child: Text(
-                                                '建议：${hint.actions.isNotEmpty ? hint.actions.first : hint.summary}',
-                                                maxLines: isCompact ? 2 : 3,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: theme.textTheme.bodySmall
-                                                    ?.copyWith(
-                                                      color: hintColor,
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (showStatusChips) ...[
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              _StatusChip(
-                                label: enabled ? '无障碍已开启' : '无障碍未开启',
-                                color: enabled
-                                    ? const Color(0xFF2E7D32)
-                                    : const Color(0xFFB3261E),
-                              ),
-                              _StatusChip(
-                                label: hasWindow ? '窗口已就绪' : '没有活动窗口',
-                                color: hasWindow
-                                    ? const Color(0xFF0B5D5B)
-                                    : const Color(0xFF6B7280),
-                              ),
-                              _StatusChip(
-                                label: _running ? '代理运行中' : '代理空闲',
-                                color: _running
-                                    ? const Color(0xFF7C4D00)
-                                    : const Color(0xFF0B5D5B),
-                              ),
-                            ],
-                          ),
-                        ],
-                        if (showConfig) ...[
-                          const SizedBox(height: 12),
-                          _SectionCard(
-                            title: '当前配置',
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _ConfigRow(
-                                  icon: Icons.cloud_outlined,
-                                  label: '提供商',
-                                  value: providerUrl.isEmpty
-                                      ? '未设置'
-                                      : providerUrl,
-                                ),
-                                const SizedBox(height: 8),
-                                _ConfigRow(
-                                  icon: Icons.memory_outlined,
-                                  label: '模型',
-                                  value: model,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        if (denseActions)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: FilledButton(
-                                  onPressed: _running ? null : _startAgent,
-                                  child: const Text('启动'),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: FilledButton.tonal(
-                                  onPressed: _running ? _stopAgent : null,
-                                  child: const Text('停止'),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: _syncSnapshot,
-                                  child: const Text('同步'),
-                                ),
-                              ),
-                            ],
-                          )
-                        else
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              FilledButton.icon(
-                                onPressed: _running ? null : _startAgent,
-                                icon: const Icon(Icons.play_arrow),
-                                label: const Text('启动'),
-                              ),
-                              FilledButton.tonalIcon(
-                                onPressed: _running ? _stopAgent : null,
-                                icon: const Icon(Icons.stop_circle_outlined),
-                                label: const Text('停止'),
-                              ),
-                              OutlinedButton.icon(
-                                onPressed: _syncSnapshot,
-                                icon: const Icon(Icons.sync),
-                                label: const Text('同步'),
-                              ),
-                            ],
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
+              alignment: Alignment.topLeft,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: renderCollapsed
+                    ? _buildCollapsedBubble(context, constraints)
+                    : _buildExpandedPanel(context, constraints),
               ),
             );
           },
@@ -476,59 +156,544 @@ class _OverlayViewState extends State<OverlayView> {
     );
   }
 
-  Future<void> _applyWindowMode(_OverlayWindowMode mode) async {
+  Widget _buildCollapsedBubble(
+    BuildContext context,
+    BoxConstraints constraints,
+  ) {
+    final bubbleColor = _running
+        ? const Color(0xFFE4A646)
+        : const Color(0xFF0C655F);
+    final indicatorColor = _accessibilityEnabled
+        ? const Color(0xFF2E7D32)
+        : Theme.of(context).colorScheme.error;
+
+    return SizedBox(
+      key: const ValueKey<String>('collapsed'),
+      width: _safeWidth(constraints, _dimensionsFor(_OverlayMode.collapsed)),
+      height: _safeHeight(constraints, _dimensionsFor(_OverlayMode.collapsed)),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(_changeMode(_OverlayMode.expanded)),
+        onPanStart: (_) => _handleBubblePanStart(),
+        onPanUpdate: (details) =>
+            unawaited(_handleBubblePanUpdate(details.delta)),
+        onPanEnd: (_) => unawaited(_snapBubbleToEdge()),
+        child: Center(
+          child: SizedBox(
+            width: 64,
+            height: 64,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [
+                          bubbleColor,
+                          bubbleColor.withValues(alpha: 0.78),
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x33000000),
+                          blurRadius: 22,
+                          offset: Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.smart_toy_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 2,
+                  right: 2,
+                  child: Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      color: indicatorColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExpandedPanel(BuildContext context, BoxConstraints constraints) {
+    final theme = Theme.of(context);
+    final panelHeight = _safeHeight(
+      constraints,
+      _dimensionsFor(_OverlayMode.expanded),
+    );
+    final status = _runStatusLabel(
+      _agentRunStatus['status']?.toString() ?? 'idle',
+    );
+    final message =
+        _agentRunStatus['message']?.toString().trim().isNotEmpty == true
+        ? _agentRunStatus['message']!.toString()
+        : '等待启动。';
+    final model = _agentConfig['model']?.toString().trim().isNotEmpty == true
+        ? _agentConfig['model']!.toString()
+        : '未配置';
+    final hint = resolveAgentDiagnosticHint(
+      serviceStatus: _serviceStatus,
+      agentConfig: _agentConfig,
+      agentRunStatus: _agentRunStatus,
+    );
+    final logHeight = math.max(120.0, math.min(220.0, panelHeight * 0.34));
+    final payloadHeight = panelHeight < 420 ? 58.0 : 74.0;
+
+    return SizedBox(
+      key: const ValueKey<String>('expanded'),
+      width: _safeWidth(constraints, _dimensionsFor(_OverlayMode.expanded)),
+      height: panelHeight,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFFF7F3EA), Color(0xFFE8F5F3)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0x22173B3A)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x30000000),
+              blurRadius: 26,
+              offset: Offset(0, 14),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '答题悬浮窗',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF153837),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '当前包名：$_currentPackageName',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: const Color(0xFF5A6E6C),
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton.filledTonal(
+                    tooltip: '最小化',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () =>
+                        unawaited(_changeMode(_OverlayMode.collapsed)),
+                    icon: const Icon(Icons.remove),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: '关闭',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => unawaited(_sendCommand('close_overlay')),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _SectionCard(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: _running
+                            ? const Color(0xFFF1D39A)
+                            : const Color(0xFFB8D9D5),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Icon(
+                        _running
+                            ? Icons.smart_toy_outlined
+                            : Icons.pause_circle_outline,
+                        color: const Color(0xFF153837),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '当前状态：$status',
+                            style: theme.textTheme.labelLarge?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: const Color(0xFF153837),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            message,
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF4D6664),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (hint != null) ...[
+                const SizedBox(height: 12),
+                _buildHintCard(context, hint),
+              ],
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _StatusChip(
+                    label: _accessibilityEnabled ? '无障碍已开启' : '无障碍未开启',
+                    color: _accessibilityEnabled
+                        ? const Color(0xFF2E7D32)
+                        : theme.colorScheme.error,
+                  ),
+                  _StatusChip(
+                    label: _hasActiveWindow ? '目标窗口已就绪' : '未获取目标窗口',
+                    color: _hasActiveWindow
+                        ? const Color(0xFF0C655F)
+                        : const Color(0xFF6B7280),
+                  ),
+                  _StatusChip(
+                    label: _running ? 'Agent 运行中' : 'Agent 已停止',
+                    color: _running
+                        ? const Color(0xFF8A5A00)
+                        : const Color(0xFF0C655F),
+                  ),
+                  _StatusChip(
+                    label: '模型：$model',
+                    color: const Color(0xFF0C655F),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _running ? null : _startAgent,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('启动'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: _running ? _stopAgent : null,
+                    icon: const Icon(Icons.stop_circle_outlined),
+                    label: const Text('停止'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _syncSnapshot,
+                    icon: const Icon(Icons.sync),
+                    label: const Text('同步'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '运行日志',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF153837),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: logHeight,
+                child: _SectionCard(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                  child: _logs.isEmpty
+                      ? Center(
+                          child: Text(
+                            '暂无日志输出。',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: const Color(0xFF6A7B79),
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: _logs.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 6),
+                          itemBuilder: (context, index) {
+                            final line = _logs[index];
+                            return Text(
+                              line,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: const Color(0xFF284644),
+                                fontFamily: 'monospace',
+                                height: 1.35,
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '最近载荷',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF153837),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: payloadHeight,
+                child: _SectionCard(
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      _lastPayload,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF284644),
+                        fontFamily: 'monospace',
+                        height: 1.3,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHintCard(BuildContext context, AgentDiagnosticHint hint) {
+    final theme = Theme.of(context);
+    final (color, icon) = switch (hint.severity) {
+      AgentDiagnosticSeverity.info => (
+        const Color(0xFF0C655F),
+        Icons.info_outline,
+      ),
+      AgentDiagnosticSeverity.warning => (
+        const Color(0xFF9A6700),
+        Icons.warning_amber_outlined,
+      ),
+      AgentDiagnosticSeverity.error => (
+        theme.colorScheme.error,
+        Icons.error_outline,
+      ),
+    };
+
+    final actionText = hint.actions.isEmpty ? hint.summary : hint.actions.first;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              actionText,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: color,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _changeMode(_OverlayMode mode) async {
     if (!mounted) {
       return;
     }
     setState(() {
-      _windowMode = mode;
+      _mode = mode;
     });
-    final dimensions = _resolveWindowDimensions();
-    await FlutterOverlayWindow.resizeOverlay(
-      dimensions.width,
-      dimensions.height,
-      true,
+    await _resizeOverlayForMode(mode);
+    await _sendCommand(
+      'set_overlay_mode',
+      arguments: <String, dynamic>{'mode': mode.name},
     );
   }
 
-  _OverlayDimensions _resolveWindowDimensions() {
-    final view = WidgetsBinding.instance.platformDispatcher.views.first;
-    final screenWidth = view.physicalSize.width / view.devicePixelRatio;
-    final screenHeight = view.physicalSize.height / view.devicePixelRatio;
-    final availableWidth = math.max(260.0, screenWidth - 24);
-    final availableHeight = math.max(220.0, screenHeight - 96);
+  Future<void> _resizeOverlayForMode(_OverlayMode mode) async {
+    final dimensions = _dimensionsFor(mode);
+    try {
+      await FlutterOverlayWindow.resizeOverlay(
+        dimensions.width,
+        dimensions.height,
+        false,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _appendOverlayLog('resize overlay failed: $error');
+      });
+    }
+  }
 
-    switch (_windowMode) {
-      case _OverlayWindowMode.compact:
+  void _handleBubblePanStart() {
+    _dragStartPosition = _overlayPosition;
+    _dragDelta = Offset.zero;
+  }
+
+  Future<void> _handleBubblePanUpdate(Offset delta) async {
+    final start = _dragStartPosition;
+    if (start == null) {
+      return;
+    }
+
+    _dragDelta += delta;
+    final target = _clampPosition(
+      OverlayPosition(start.x + _dragDelta.dx, start.y + _dragDelta.dy),
+      _dimensionsFor(_OverlayMode.collapsed),
+    );
+    await FlutterOverlayWindow.moveOverlay(target);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _overlayPosition = target;
+    });
+  }
+
+  Future<void> _snapBubbleToEdge() async {
+    final dimensions = _dimensionsFor(_OverlayMode.collapsed);
+    final screen = _logicalScreenSize();
+    final targetX =
+        _overlayPosition.x + (dimensions.width / 2) < (screen.width / 2)
+        ? _edgeMargin
+        : screen.width - dimensions.width - _edgeMargin;
+    final target = _clampPosition(
+      OverlayPosition(targetX, _overlayPosition.y),
+      dimensions,
+    );
+    await FlutterOverlayWindow.moveOverlay(target);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _overlayPosition = target;
+    });
+    await _sendCommand(
+      'move_overlay',
+      arguments: <String, dynamic>{'x': target.x, 'y': target.y},
+    );
+  }
+
+  _OverlayDimensions _dimensionsFor(_OverlayMode mode) {
+    final screen = _logicalScreenSize();
+    final maxWidth = math.max(96.0, screen.width - (_edgeMargin * 2));
+    final maxHeight = math.max(96.0, screen.height - (_edgeMargin * 2));
+
+    switch (mode) {
+      case _OverlayMode.collapsed:
         return _OverlayDimensions(
-          width: math.min(320.0, availableWidth).round(),
-          height: _boundDimension(230, min: 190, max: availableHeight),
+          width: _boundDimension(82, min: 74, max: maxWidth),
+          height: _boundDimension(82, min: 74, max: maxHeight),
         );
-      case _OverlayWindowMode.standard:
+      case _OverlayMode.expanded:
         return _OverlayDimensions(
-          width: math.min(420.0, availableWidth).round(),
-          height: _boundDimension(400, min: 340, max: availableHeight),
-        );
-      case _OverlayWindowMode.expanded:
-        return _OverlayDimensions(
-          width: math.min(560.0, availableWidth).round(),
+          width: _boundDimension(
+            math.min(380.0, maxWidth),
+            min: 280,
+            max: maxWidth,
+          ),
           height: _boundDimension(
-            availableHeight * 0.82,
-            min: 480,
-            max: availableHeight,
+            math.min(560.0, maxHeight),
+            min: 420,
+            max: maxHeight,
           ),
         );
     }
   }
 
-  double _cardMaxWidth(double maxWidth) {
-    if (!maxWidth.isFinite) {
-      return _windowMode == _OverlayWindowMode.expanded ? 560 : 460;
+  Size _logicalScreenSize() {
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    return Size(
+      view.display.size.width / view.display.devicePixelRatio,
+      view.display.size.height / view.display.devicePixelRatio,
+    );
+  }
+
+  OverlayPosition _clampPosition(
+    OverlayPosition position,
+    _OverlayDimensions dimensions,
+  ) {
+    final screen = _logicalScreenSize();
+    final maxX = math.max(
+      _edgeMargin,
+      screen.width - dimensions.width - _edgeMargin,
+    );
+    final maxY = math.max(
+      _edgeMargin,
+      screen.height - dimensions.height - _edgeMargin,
+    );
+
+    return OverlayPosition(
+      position.x.clamp(_edgeMargin, maxX).toDouble(),
+      position.y.clamp(_edgeMargin, maxY).toDouble(),
+    );
+  }
+
+  double _safeWidth(BoxConstraints constraints, _OverlayDimensions fallback) {
+    if (constraints.maxWidth.isFinite && constraints.maxWidth > 0) {
+      return constraints.maxWidth;
     }
-    final preferred = _windowMode == _OverlayWindowMode.expanded
-        ? 560.0
-        : 460.0;
-    return math.min(maxWidth, preferred);
+    return fallback.width.toDouble();
+  }
+
+  double _safeHeight(BoxConstraints constraints, _OverlayDimensions fallback) {
+    if (constraints.maxHeight.isFinite && constraints.maxHeight > 0) {
+      return constraints.maxHeight;
+    }
+    return fallback.height.toDouble();
   }
 
   int _boundDimension(
@@ -553,11 +718,15 @@ class _OverlayViewState extends State<OverlayView> {
     await _sendCommand('stop_agent');
   }
 
-  Future<void> _sendCommand(String action) async {
+  Future<void> _sendCommand(
+    String action, {
+    Map<String, dynamic> arguments = const <String, dynamic>{},
+  }) async {
     final payload = jsonEncode(<String, dynamic>{
       'source': 'overlay',
       'type': 'command',
       'action': action,
+      ...arguments,
     });
     final mainPort = IsolateNameServer.lookupPortByName(
       OverlayMessageBridge.mainPortName,
@@ -572,12 +741,13 @@ class _OverlayViewState extends State<OverlayView> {
     if (!mounted) {
       return;
     }
+
     setState(() {
       _agentRunStatus = <String, dynamic>{
         ..._agentRunStatus,
         'running': false,
         'status': 'failed',
-        'message': '未连接到主界面，请先打开代理控制台。',
+        'message': '未连接到主界面，请先返回应用主页。',
         'updatedAt': DateTime.now().millisecondsSinceEpoch,
       };
     });
@@ -599,6 +769,12 @@ class _OverlayViewState extends State<OverlayView> {
           _serviceStatus = _mapValue(event['serviceStatus']);
           _agentConfig = _mapValue(event['agentConfig']);
           _agentRunStatus = _mapValue(event['agentRunStatus']);
+          _lastPayload = event['lastPayload']?.toString() ?? _lastPayload;
+          final snapshotLogs = _stringList(event['logs']);
+          if (snapshotLogs.isNotEmpty) {
+            _logs = snapshotLogs;
+          }
+          _applyOverlayState(_mapValue(event['overlayState']));
           break;
         case 'service_status':
           _serviceStatus = _mapValue(event['payload']);
@@ -609,8 +785,40 @@ class _OverlayViewState extends State<OverlayView> {
         case 'agent_status':
           _agentRunStatus = _mapValue(event['payload']);
           break;
+        case 'overlay_state':
+          _applyOverlayState(_mapValue(event['payload']));
+          break;
+        case 'payload':
+          _lastPayload = event['payload']?.toString() ?? _lastPayload;
+          break;
+        case 'log':
+          _appendOverlayLog(event['line']?.toString() ?? '');
+          break;
       }
     });
+  }
+
+  void _applyOverlayState(Map<String, dynamic> state) {
+    final modeValue = state['mode']?.toString();
+    if (modeValue == 'collapsed') {
+      _mode = _OverlayMode.collapsed;
+    } else if (modeValue == 'expanded') {
+      _mode = _OverlayMode.expanded;
+    }
+
+    final position = _mapValue(state['position']);
+    final x = _readDouble(position['x']);
+    final y = _readDouble(position['y']);
+    if (x != null && y != null) {
+      _overlayPosition = OverlayPosition(x, y);
+    }
+  }
+
+  void _appendOverlayLog(String line) {
+    if (line.trim().isEmpty) {
+      return;
+    }
+    _logs = <String>[line, ..._logs].take(_maxLogLines).toList(growable: false);
   }
 
   Map<String, dynamic>? _normalizeEvent(dynamic rawEvent) {
@@ -642,6 +850,23 @@ class _OverlayViewState extends State<OverlayView> {
     }
     return const <String, dynamic>{};
   }
+
+  List<String> _stringList(dynamic value) {
+    if (value is List) {
+      return value
+          .map((dynamic item) => item?.toString() ?? '')
+          .where((String item) => item.trim().isNotEmpty)
+          .toList(growable: false);
+    }
+    return const <String>[];
+  }
+
+  double? _readDouble(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value?.toString() ?? '');
+  }
 }
 
 class _StatusChip extends StatelessWidget {
@@ -670,78 +895,24 @@ class _StatusChip extends StatelessWidget {
 }
 
 class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.title, required this.child});
+  const _SectionCard({
+    required this.child,
+    this.padding = const EdgeInsets.all(12),
+  });
 
-  final String title;
   final Widget child;
+  final EdgeInsetsGeometry padding;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: padding,
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(18),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 8),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-class _ConfigRow extends StatelessWidget {
-  const _ConfigRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 18, color: const Color(0xFF58706E)),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: const Color(0xFF58706E),
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                value,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-        ),
-      ],
+      child: child,
     );
   }
 }

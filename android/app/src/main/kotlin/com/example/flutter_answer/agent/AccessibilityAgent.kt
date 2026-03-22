@@ -15,13 +15,23 @@ object AccessibilityAgent {
     private const val stableWindowMs = 350L
     private val locatorCache = LinkedHashMap<String, NodeLocator>()
 
-    fun getServiceStatus(): Map<String, Any?> {
+    fun peekServiceStatus(): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-        val payload = mapOf(
+        val currentPackageName = service?.currentPackageName()
+        return mapOf(
             "ok" to true,
             "enabled" to (service != null),
             "lastEventAtMs" to ExamAccessibilityService.lastEventAtMs,
             "hasActiveWindow" to (service?.currentRoot() != null),
+            "currentPackageName" to currentPackageName,
+        )
+    }
+
+    fun getServiceStatus(): Map<String, Any?> {
+        val payload = peekServiceStatus()
+        AgentEventBus.log(
+            "info",
+            "服务状态已刷新，当前包名：${payload["currentPackageName"] ?: "未识别"}",
         )
         AgentEventBus.toolResult("getServiceStatus", true, payload)
         return payload
@@ -33,18 +43,20 @@ object AccessibilityAgent {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             },
         )
-        val payload = success("Opened accessibility settings.")
-        AgentEventBus.log("info", "Opened accessibility settings.")
+        val payload = success("已打开无障碍设置页面。")
+        AgentEventBus.log("info", "已打开无障碍设置页面。")
         AgentEventBus.toolResult("openAccessibilitySettings", true, payload)
         return payload
     }
 
     fun getUiSnapshot(): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-            ?: return reportFailure("getUiSnapshot", "Accessibility service is not enabled.", "service_unavailable")
-        val snapshot = dumpUiTree(service.currentRoot())
+            ?: return reportFailure("getUiSnapshot", "无障碍服务尚未开启。", "service_unavailable")
+        val root = service.currentRoot()
+            ?: return reportFailure("getUiSnapshot", "未获取到可用节点，当前没有可分析的目标窗口。", "window_unavailable")
+        val snapshot = dumpUiTree(root)
         val payload = success(
-            message = "Captured ${snapshot.elements.size} UI elements.",
+            message = "已采集 ${snapshot.elements.size} 个界面节点。",
             extra = mapOf("snapshot" to snapshot.toMap()),
         )
         AgentEventBus.log("info", payload["message"] as String)
@@ -54,11 +66,13 @@ object AccessibilityAgent {
 
     fun getQuestionContext(): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-            ?: return reportFailure("getQuestionContext", "Accessibility service is not enabled.", "service_unavailable")
-        val snapshot = dumpUiTree(service.currentRoot())
+            ?: return reportFailure("getQuestionContext", "无障碍服务尚未开启。", "service_unavailable")
+        val root = service.currentRoot()
+            ?: return reportFailure("getQuestionContext", "未获取到可用节点，无法提取题目上下文。", "window_unavailable")
+        val snapshot = dumpUiTree(root)
         val context = QuestionExtractor.extract(snapshot)
         val payload = success(
-            message = "Extracted ${context.options.size} options and ${context.actions.size} actions.",
+            message = "已提取题目上下文，识别到 ${context.options.size} 个选项、${context.actions.size} 个操作按钮。",
             extra = mapOf("context" to context.toMap()),
         )
         AgentEventBus.log("info", payload["message"] as String)
@@ -68,16 +82,16 @@ object AccessibilityAgent {
 
     fun clickElement(elementId: String?): Map<String, Any?> {
         if (elementId.isNullOrBlank()) {
-            return reportFailure("clickElement", "elementId is required.", "invalid_arguments")
+            return reportFailure("clickElement", "缺少 elementId，无法执行点击。", "invalid_arguments")
         }
 
         val node = findNodeById(elementId)
-            ?: return reportFailure("clickElement", "Unable to resolve element $elementId.", "element_not_found")
+            ?: return reportFailure("clickElement", "未找到可点击节点：$elementId。", "element_not_found")
 
         val result = if (click(node)) {
-            success("Clicked $elementId.", mapOf("elementId" to elementId))
+            success("已点击节点：$elementId。", mapOf("elementId" to elementId))
         } else {
-            failure("Element $elementId is not clickable.", "click_failed")
+            failure("节点 $elementId 不可点击。", "click_failed")
         }
         val ok = result["ok"] as Boolean
         AgentEventBus.log(if (ok) "info" else "error", result["message"] as String)
@@ -87,16 +101,16 @@ object AccessibilityAgent {
 
     fun setText(elementId: String?, text: String?): Map<String, Any?> {
         if (elementId.isNullOrBlank() || text == null) {
-            return reportFailure("setText", "elementId and text are required.", "invalid_arguments")
+            return reportFailure("setText", "缺少 elementId 或 text，无法输入内容。", "invalid_arguments")
         }
 
         val node = findNodeById(elementId)
-            ?: return reportFailure("setText", "Unable to resolve element $elementId.", "element_not_found")
+            ?: return reportFailure("setText", "未找到输入节点：$elementId。", "element_not_found")
 
         val result = if (setTextValue(node, text)) {
-            success("Filled $elementId.", mapOf("elementId" to elementId, "text" to text))
+            success("已向节点 $elementId 输入内容。", mapOf("elementId" to elementId, "text" to text))
         } else {
-            failure("Element $elementId does not accept text.", "set_text_failed")
+            failure("节点 $elementId 不支持输入文本。", "set_text_failed")
         }
         val ok = result["ok"] as Boolean
         AgentEventBus.log(if (ok) "info" else "error", result["message"] as String)
@@ -108,37 +122,37 @@ object AccessibilityAgent {
         if (elementId.isNullOrBlank() || targetChecked == null) {
             return reportFailure(
                 "toggleElement",
-                "elementId and targetChecked are required.",
+                "缺少 elementId 或 targetChecked，无法切换选中状态。",
                 "invalid_arguments",
             )
         }
 
         val node = findNodeById(elementId)
-            ?: return reportFailure("toggleElement", "Unable to resolve element $elementId.", "element_not_found")
+            ?: return reportFailure("toggleElement", "未找到可切换节点：$elementId。", "element_not_found")
         val toggleNode = findToggleNode(node)
             ?: return reportFailure(
                 "toggleElement",
-                "Element $elementId is not checkable.",
+                "节点 $elementId 不支持勾选状态切换。",
                 "toggle_failed",
             )
 
         val currentChecked = toggleNode.isChecked
         val result = if (currentChecked == targetChecked) {
             success(
-                message = "Element $elementId already matches the requested checked state.",
+                message = "节点 $elementId 当前状态已符合预期，无需重复切换。",
                 extra = mapOf(
                     "elementId" to elementId,
                     "checked" to currentChecked,
                 ),
             )
         } else if (!performToggle(toggleNode)) {
-            failure("Failed to toggle element $elementId.", "toggle_failed")
+            failure("切换节点 $elementId 失败。", "toggle_failed")
         } else {
             Thread.sleep(120)
             val refreshedChecked = findNodeById(elementId)?.let(::findToggleNode)?.isChecked
             if (refreshedChecked == null || refreshedChecked == targetChecked) {
                 success(
-                    message = "Toggled $elementId.",
+                    message = "已切换节点：$elementId。",
                     extra = mapOf(
                         "elementId" to elementId,
                         "checked" to (refreshedChecked ?: targetChecked),
@@ -146,7 +160,7 @@ object AccessibilityAgent {
                 )
             } else {
                 failure(
-                    "Element $elementId did not reach the requested checked state.",
+                    "节点 $elementId 未达到目标选中状态。",
                     "toggle_failed",
                 )
             }
@@ -160,21 +174,21 @@ object AccessibilityAgent {
 
     fun scrollScreen(direction: String?, amount: String?): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-            ?: return reportFailure("scrollScreen", "Accessibility service is not enabled.", "service_unavailable")
+            ?: return reportFailure("scrollScreen", "无障碍服务尚未开启。", "service_unavailable")
         val normalizedDirection = direction?.trim()?.lowercase()
         val normalizedAmount = amount?.trim()?.lowercase().orEmpty().ifBlank { "medium" }
 
         if (normalizedDirection !in setOf("up", "down", "left", "right")) {
             return reportFailure(
                 "scrollScreen",
-                "direction must be one of up, down, left, or right.",
+                "滚动方向必须是 up、down、left 或 right。",
                 "invalid_arguments",
             )
         }
         if (normalizedAmount !in setOf("small", "medium", "large")) {
             return reportFailure(
                 "scrollScreen",
-                "amount must be one of small, medium, or large.",
+                "滚动幅度必须是 small、medium 或 large。",
                 "invalid_arguments",
             )
         }
@@ -201,7 +215,7 @@ object AccessibilityAgent {
 
         val result = if (stepsPerformed > 0) {
             success(
-                message = "Scrolled $normalizedDirection $stepsPerformed step(s).",
+                message = "已向 $normalizedDirection 方向滚动 $stepsPerformed 次。",
                 extra = mapOf(
                     "direction" to normalizedDirection,
                     "amount" to normalizedAmount,
@@ -209,7 +223,7 @@ object AccessibilityAgent {
                 ),
             )
         } else {
-            failure("No scrollable container responded to $normalizedDirection.", "scroll_failed")
+            failure("当前界面没有可响应 $normalizedDirection 滚动的容器。", "scroll_failed")
         }
 
         val ok = result["ok"] as Boolean
@@ -220,9 +234,9 @@ object AccessibilityAgent {
 
     fun pressGlobal(action: String?): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-            ?: return reportFailure("pressGlobal", "Accessibility service is not enabled.", "service_unavailable")
+            ?: return reportFailure("pressGlobal", "无障碍服务尚未开启。", "service_unavailable")
         val normalizedAction = action?.trim()?.lowercase()
-            ?: return reportFailure("pressGlobal", "action is required.", "invalid_arguments")
+            ?: return reportFailure("pressGlobal", "缺少 action，无法执行系统级操作。", "invalid_arguments")
 
         val globalAction = when (normalizedAction) {
             "back" -> AccessibilityService.GLOBAL_ACTION_BACK
@@ -233,16 +247,16 @@ object AccessibilityAgent {
             else -> {
                 return reportFailure(
                     "pressGlobal",
-                    "action must be one of back, home, recents, notifications, or quick_settings.",
+                    "action 必须是 back、home、recents、notifications 或 quick_settings。",
                     "invalid_arguments",
                 )
             }
         }
 
         val result = if (service.performGlobalAction(globalAction)) {
-            success("Performed global action: $normalizedAction.", mapOf("action" to normalizedAction))
+            success("已执行系统操作：$normalizedAction。", mapOf("action" to normalizedAction))
         } else {
-            failure("Failed to perform global action: $normalizedAction.", "global_action_failed")
+            failure("执行系统操作失败：$normalizedAction。", "global_action_failed")
         }
 
         val ok = result["ok"] as Boolean
@@ -253,7 +267,7 @@ object AccessibilityAgent {
 
     fun waitForIdle(timeoutMs: Int): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-            ?: return reportFailure("waitForIdle", "Accessibility service is not enabled.", "service_unavailable")
+            ?: return reportFailure("waitForIdle", "无障碍服务尚未开启。", "service_unavailable")
 
         val timeout = timeoutMs.coerceIn(200, 5000)
         val start = SystemClock.uptimeMillis()
@@ -262,7 +276,7 @@ object AccessibilityAgent {
             if (quietFor >= stableWindowMs && service.currentRoot() != null) {
                 val waitedMs = SystemClock.uptimeMillis() - start
                 val payload = success(
-                    message = "UI settled after $waitedMs ms.",
+                    message = "界面已稳定，等待耗时 ${waitedMs}ms。",
                     extra = mapOf("waitedMs" to waitedMs),
                 )
                 AgentEventBus.log("info", payload["message"] as String)
@@ -272,7 +286,7 @@ object AccessibilityAgent {
             Thread.sleep(80)
         }
 
-        return reportFailure("waitForIdle", "Timed out after $timeout ms while waiting for idle.", "timeout")
+        return reportFailure("waitForIdle", "等待界面稳定超时，已达到 ${timeout}ms。", "timeout")
     }
 
     private fun dumpUiTree(root: AccessibilityNodeInfo?): UiSnapshot {

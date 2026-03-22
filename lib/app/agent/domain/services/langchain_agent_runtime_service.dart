@@ -45,7 +45,7 @@ class LangChainAgentRuntimeService {
       if (reply.isEmpty) {
         return ConnectivityProbeResult(
           ok: false,
-          message: 'Model returned an empty response.',
+          message: '模型返回了空内容。',
           reply: '',
           latencyMs: latencyMs,
           model: config.model,
@@ -55,7 +55,7 @@ class LangChainAgentRuntimeService {
 
       return ConnectivityProbeResult(
         ok: true,
-        message: 'Model connectivity is healthy.',
+        message: '模型连通性正常。',
         reply: reply,
         latencyMs: latencyMs,
         model: config.model,
@@ -84,19 +84,19 @@ class LangChainAgentRuntimeService {
 
     final nativeTools = await _platformGateway.listTools();
     if (nativeTools.isEmpty) {
-      throw StateError('No native tools are registered on the Android side.');
+      throw StateError('Android 原生侧未注册可用工具，无法启动 Agent。');
     }
 
     onLog(
       'info',
-      'Loaded ${nativeTools.length} Android tools through the platform channel.',
+      '已通过 Platform Channel 加载 ${nativeTools.length} 个 Android 工具。',
     );
 
     var toolStep = 0;
     var latestState = AgentRunState.idle().copyWith(
       running: true,
       status: 'starting',
-      message: 'LangChain agent is starting.',
+      message: 'LangChain Agent 正在启动。',
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
     onStatus(latestState);
@@ -113,7 +113,7 @@ class LangChainAgentRuntimeService {
                   running: true,
                   status: 'acting',
                   step: toolStep,
-                  message: 'Executing tool: ${definition.name}',
+                  message: '正在执行工具：${definition.name}',
                   lastTool: definition.name,
                   updatedAt: DateTime.now().millisecondsSinceEpoch,
                 );
@@ -127,14 +127,14 @@ class LangChainAgentRuntimeService {
                   step: toolStep,
                   message: result.message?.isNotEmpty == true
                       ? result.message!
-                      : 'Tool ${definition.name} completed.',
+                      : '工具 ${definition.name} 已执行完成。',
                   lastTool: definition.name,
                   updatedAt: DateTime.now().millisecondsSinceEpoch,
                 );
                 onStatus(latestState);
                 onLog(
                   result.ok ? 'info' : 'warn',
-                  '[${definition.name}] ${result.message ?? 'Tool finished.'}',
+                  '[${definition.name}] ${result.message ?? '工具执行完成。'}',
                 );
               },
             ),
@@ -151,7 +151,7 @@ class LangChainAgentRuntimeService {
       latestState = latestState.copyWith(
         running: true,
         status: 'thinking',
-        message: 'Waiting for the model to plan the next step.',
+        message: '正在等待模型规划下一步。',
         updatedAt: DateTime.now().millisecondsSinceEpoch,
       );
       onStatus(latestState);
@@ -164,7 +164,7 @@ class LangChainAgentRuntimeService {
           running: false,
           status: 'stopped',
           step: toolStep,
-          message: 'Stopped by operator.',
+          message: '已按操作要求停止。',
           lastTool: latestState.lastTool,
           lastModelText: latestState.lastModelText,
           updatedAt: DateTime.now().millisecondsSinceEpoch,
@@ -175,7 +175,7 @@ class LangChainAgentRuntimeService {
         running: false,
         status: 'completed',
         step: toolStep,
-        message: finalText.isEmpty ? 'Agent finished.' : finalText,
+        message: finalText.isEmpty ? 'Agent 已完成。' : finalText,
         lastTool: latestState.lastTool,
         lastModelText: finalText.isEmpty
             ? latestState.lastModelText
@@ -189,7 +189,7 @@ class LangChainAgentRuntimeService {
         running: false,
         status: 'stopped',
         step: toolStep,
-        message: 'Stopped by operator.',
+        message: '已按操作要求停止。',
         lastTool: latestState.lastTool,
         lastModelText: latestState.lastModelText,
         updatedAt: DateTime.now().millisecondsSinceEpoch,
@@ -287,15 +287,11 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
 
   String _buildConnectivityPrompt(List<Map<String, String>> messages) {
     final buffer = StringBuffer()
-      ..writeln(
-        'You are validating model connectivity for an Android agent app.',
-      )
-      ..writeln('Reply briefly to the last user message.')
-      ..writeln(
-        'If the conversation is clearly a connectivity check, explicitly include "妯″瀷杩為€氭甯? in the reply.',
-      )
+      ..writeln('你正在为一个 Android Agent 应用验证模型连通性。')
+      ..writeln('请简短回复最后一条用户消息。')
+      ..writeln('如果这是一次连通性测试，请在回复中明确包含“模型连通正常”。')
       ..writeln()
-      ..writeln('Conversation:');
+      ..writeln('对话如下：');
 
     for (final message in messages) {
       final role = message['role']?.trim().isNotEmpty == true
@@ -313,10 +309,10 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
 
   void _validateConfig(AgentConfig config) {
     if (config.providerUrl.trim().isEmpty) {
-      throw StateError('Set a provider URL before running the agent.');
+      throw StateError('请先填写提供商 URL。');
     }
     if (config.apiKey.trim().isEmpty) {
-      throw StateError('Set an API key before running the agent.');
+      throw StateError('请先填写提供商密钥。');
     }
   }
 }

@@ -1,4 +1,4 @@
-﻿// GENERATED CODE - DO NOT MODIFY BY HAND
+// GENERATED CODE - DO NOT MODIFY BY HAND
 
 part of 'app_http_client.dart';
 
@@ -50,4 +50,3 @@ class _AppHttpClient implements AppHttpClient {
 }
 
 // dart format on
-

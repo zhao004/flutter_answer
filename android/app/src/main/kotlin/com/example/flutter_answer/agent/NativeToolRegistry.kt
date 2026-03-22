@@ -201,7 +201,7 @@ object NativeToolRegistry {
             val payload = mapOf(
                 "ok" to false,
                 "code" to "unknown_tool",
-                "message" to "Unknown tool: $toolName",
+                "message" to "未知工具：$toolName",
             )
             return NativeToolResult(
                 requestId = requestId,
