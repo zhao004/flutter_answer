@@ -15,11 +15,6 @@ object QuestionExtractor {
     private val submitActionKeywords = listOf("提交", "交卷", "完成考试", "立即交卷")
     private val confirmActionKeywords = listOf("确认", "确定", "继续提交", "确认提交", "确定提交")
     private val cancelActionKeywords = listOf("取消", "返回", "再想想")
-    private val multipleKeywords = listOf("多选", "可多选", "不定项", "至少选", "至少选择", "可选择多项")
-    private val singleKeywords = listOf("单选", "仅选一项", "只能选一项")
-    private val shortAnswerKeywords = listOf("简答", "问答", "论述", "主观题", "作答", "简述", "说明", "分析", "请回答", "写出")
-    private val fillBlankKeywords = listOf("填空", "填入", "补全", "填写", "空格", "横线处", "括号内")
-    private val booleanKeywords = listOf("判断题", "对错", "正确", "错误")
     private val booleanOptionKeywords = listOf("正确", "错误", "对", "错", "是", "否", "true", "false")
     private val voteKeywords = listOf("投票", "票数", "赞成", "反对", "候选", "候选项", "投票项")
     private val requiredKeywords = listOf("必答", "必填", "必做", "*", "（必填）")
@@ -176,33 +171,9 @@ object QuestionExtractor {
         val blanks = collectBlanks(cleanedQuestion, inputs)
         val required = detectRequired(cleanedQuestion, snapshot)
 
-        val checkedOptionCount = options.count { it.checked }
-        val optionElements = options.mapNotNull { option -> elementById[option.id] }
-        val hasCheckboxOption = optionElements.any { element ->
-            val className = element.className.orEmpty()
-            className.contains("CheckBox", ignoreCase = true) ||
-                className.contains("CheckedTextView", ignoreCase = true)
-        }
-        val hasRadioOption = optionElements.any { element ->
-            element.className.orEmpty().contains("RadioButton", ignoreCase = true)
-        }
-        val hasMultipleKeyword = multipleKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
-        val hasBooleanKeyword = booleanKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
-        val hasShortAnswerKeyword = shortAnswerKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
-        val hasFillBlankKeyword = fillBlankKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
         val hasBlankPlaceholder = containsBlankPlaceholder(cleanedQuestion)
-        val hasBooleanOptionPair = options.size in 2..3 && options.all { option ->
-            isBooleanLikeOptionText(option.text)
-        }
         val hasInputSignal = inputs.isNotEmpty()
         val hasChoiceSignal = options.isNotEmpty()
-        val hasFillBlankSignal = hasInputSignal &&
-            (inputs.size >= 2 || hasFillBlankKeyword || hasBlankPlaceholder)
-        val hasMultipleSignal = hasChoiceSignal && (
-            hasMultipleKeyword ||
-                (checkedOptionCount >= 2) ||
-                (hasCheckboxOption && !hasRadioOption)
-        )
 
         val submitLikeActionCount = actions.count { action ->
             action.kind == "submit" || action.kind == "confirm"
@@ -210,68 +181,11 @@ object QuestionExtractor {
         val hasVoteKeyword = voteKeywords.any { keyword -> normalizedQuestion.contains(keyword) } ||
             actions.any { action -> action.text.contains("投票") } ||
             options.any { option -> voteKeywords.any { keyword -> option.text.contains(keyword) } }
-        val hasQuestionSignals = cleanedQuestion.isNotBlank() || options.isNotEmpty() || inputs.isNotEmpty()
+        val hasQuestionSignals = cleanedQuestion.isNotBlank() || hasChoiceSignal || hasInputSignal || hasBlankPlaceholder
         val submitOnlyPage = submitLikeActionCount > 0 &&
             options.isEmpty() &&
             inputs.isEmpty() &&
             cleanedQuestion.isBlank()
-
-        val questionTypeDecision = when {
-            hasVoteKeyword && hasChoiceSignal -> QuestionTypeDecision(
-                code = "vote_selection",
-                label = "投票项选择页",
-                reason = "题干或选项命中投票关键词，且存在可选项。",
-                strength = 0.88,
-            )
-            submitOnlyPage -> QuestionTypeDecision(
-                code = "submit_page",
-                label = "交卷页",
-                reason = "检测到提交/确认类操作区，且题目要素不足。",
-                strength = 0.9,
-            )
-            hasBooleanOptionPair || hasBooleanKeyword -> QuestionTypeDecision(
-                code = "true_false",
-                label = "判断题",
-                reason = if (hasBooleanOptionPair) {
-                    "选项命中“对/错/是/否/true/false”判断题特征。"
-                } else {
-                    "题干包含判断题关键词。"
-                },
-                strength = 0.88,
-            )
-            hasFillBlankSignal -> QuestionTypeDecision(
-                code = "fill_blank",
-                label = "填空题",
-                reason = "检测到输入框/空白占位符等填空结构信号。",
-                strength = 0.84,
-            )
-            hasChoiceSignal -> QuestionTypeDecision(
-                code = "choice_question",
-                label = "选择题",
-                reason = if (hasMultipleSignal) {
-                    "检测到多选结构信号，按通用选择题处理。"
-                } else {
-                    "检测到可选项结构，按通用选择题处理。"
-                },
-                strength = if (hasMultipleSignal) 0.82 else 0.76,
-            )
-            hasInputSignal -> QuestionTypeDecision(
-                code = "text_input",
-                label = "文本输入题",
-                reason = if (hasShortAnswerKeyword) {
-                    "检测到输入框且题干包含主观作答关键词。"
-                } else {
-                    "检测到输入框且无稳定选项结构，按文本输入题处理。"
-                },
-                strength = 0.74,
-            )
-            else -> QuestionTypeDecision(
-                code = "unknown",
-                label = "未知题型",
-                reason = "题型字段仅作辅助，当前未检测到稳定结构信号。",
-                strength = 0.36,
-            )
-        }
         val pageType = resolveContextType(
             submitOnlyPage = submitOnlyPage,
             hasVoteKeyword = hasVoteKeyword,
@@ -299,31 +213,30 @@ object QuestionExtractor {
         )
 
         val confidence = estimateConfidence(
-            decisionStrength = questionTypeDecision.strength,
             pageConfidence = pageTypeConfidence,
             questionText = cleanedQuestion,
             options = options,
             inputs = inputs,
             blanks = blanks,
+            actions = actions,
+            hasVoteKeyword = hasVoteKeyword,
+            submitOnlyPage = submitOnlyPage,
         )
-        val needConfirm = confidence < 0.64 || questionTypeDecision.code == "unknown"
+        val needConfirm = confidence < 0.64
 
         val fingerprint = buildFingerprint(
-            questionType = questionTypeDecision.code,
             normalizedQuestion = normalizedQuestion,
             options = options,
             blanks = blanks,
+            inputCount = inputs.size,
         )
-        val cacheProbe = QuestionFingerprintCache.record(fingerprint, questionTypeDecision.code)
+        val cacheProbe = QuestionFingerprintCache.record(fingerprint)
 
         return QuestionContext(
             screenPackage = snapshot.screen["packageName"]?.toString(),
             pageType = pageType,
             pageTypeConfidence = pageTypeConfidence,
             pageTypeReason = pageTypeReason,
-            questionType = questionTypeDecision.code,
-            questionTypeLabel = questionTypeDecision.label,
-            questionTypeReason = questionTypeDecision.reason,
             questionIndex = questionIndex,
             question = cleanedQuestion,
             normalizedQuestion = normalizedQuestion,
@@ -406,7 +319,7 @@ object QuestionExtractor {
         hasVoteKeyword: Boolean,
         hasQuestionSignals: Boolean,
     ): String {
-        // 不再依赖页面分类器，直接根据题目结构信号给出上下文类型，避免误分类传导到题型识别。
+        // 直接根据可观测结构信号判定上下文，避免依赖不可控页面标签造成误导。
         return when {
             submitOnlyPage -> "submit_action_context"
             hasVoteKeyword -> "vote_context"
@@ -480,24 +393,37 @@ object QuestionExtractor {
     }
 
     private fun estimateConfidence(
-        decisionStrength: Double,
         pageConfidence: Double,
         questionText: String,
         options: List<QuestionOption>,
         inputs: List<InputFieldRef>,
         blanks: List<QuestionBlank>,
+        actions: List<QuestionAction>,
+        hasVoteKeyword: Boolean,
+        submitOnlyPage: Boolean,
     ): Double {
-        var score = 0.2
-        score += (decisionStrength * 0.45)
-        score += (pageConfidence * 0.25)
+        // 仅基于可观测结构估计置信度，避免主观推断偏差污染结果。
+        var score = 0.22
+        score += (pageConfidence * 0.32)
         if (questionText.length >= 8) {
-            score += 0.08
+            score += 0.14
+        } else if (questionText.isNotBlank()) {
+            score += 0.06
         }
         if (options.isNotEmpty()) {
-            score += 0.1
+            score += 0.12
         }
         if (inputs.isNotEmpty() || blanks.isNotEmpty()) {
-            score += 0.08
+            score += 0.14
+        }
+        if (actions.isNotEmpty()) {
+            score += 0.06
+        }
+        if (hasVoteKeyword && options.isNotEmpty()) {
+            score += 0.05
+        }
+        if (submitOnlyPage) {
+            score -= 0.16
         }
         if (questionText.isBlank()) {
             score -= 0.16
@@ -772,27 +698,20 @@ object QuestionExtractor {
     }
 
     private fun buildFingerprint(
-        questionType: String,
         normalizedQuestion: String,
         options: List<QuestionOption>,
         blanks: List<QuestionBlank>,
+        inputCount: Int,
     ): String {
         val optionsPart = options
             .map { option -> "${option.label}:${option.normalizedText}" }
             .sorted()
             .joinToString("|")
-        val blankPart = blanks.size.toString()
-        val raw = "$questionType#$normalizedQuestion#$optionsPart#$blankPart"
+        val structurePart = "${blanks.size}#$inputCount"
+        val raw = "$normalizedQuestion#$optionsPart#$structurePart"
         val hash = raw.hashCode().toLong() and 0xffffffffL
         return "qf_${hash.toString(16)}"
     }
-
-    private data class QuestionTypeDecision(
-        val code: String,
-        val label: String,
-        val reason: String,
-        val strength: Double,
-    )
 
     private fun mergeQuestionCandidates(
         candidates: List<Pair<UiElement, String>>,

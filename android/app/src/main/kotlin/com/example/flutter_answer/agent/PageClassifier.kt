@@ -168,7 +168,7 @@ object PageClassifier {
             NETWORK_ERROR -> "命中网络异常关键词并检测到重试类提示。"
             LOGIN_EXPIRED -> "命中登录失效关键词。"
             PERMISSION_PROMPT -> "命中权限提示关键词且存在授权操作文案。"
-            QUESTION -> "检测到题型关键词/选项控件/底部答题操作区。"
+            QUESTION -> "检测到题目结构关键词/选项控件/底部答题操作区。"
             RESULT -> "命中成绩或提交完成关键词。"
             VOTE -> "命中投票相关文案与可选择项。"
             LOADING -> "命中加载中关键词。"

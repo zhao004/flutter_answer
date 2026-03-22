@@ -169,7 +169,7 @@ object AccessibilityAgent {
 
         val questionPreview = context.question.take(80).ifBlank { "（题干为空）" }
         val payload = success(
-            message = "上下文：${context.pageType}，题型（仅辅助）：${context.questionTypeLabel}（${context.questionType}），识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
+            message = "上下文：${context.pageType}，识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
             extra = mapOf("context" to context.toMap()),
         )
         RecognitionTraceStore.record(
@@ -179,16 +179,12 @@ object AccessibilityAgent {
             ok = true,
             message = payload["message"].toString(),
             payload = mapOf(
-                "questionType" to context.questionType,
                 "needConfirm" to context.needConfirm,
                 "fingerprint" to context.fingerprint,
             ),
         )
         AgentEventBus.log("info", payload["message"].toString())
-        AgentEventBus.log(
-            "info",
-            "题型依据：${context.questionTypeReason} 题干摘要：$questionPreview",
-        )
+        AgentEventBus.log("info", "题干摘要：$questionPreview")
         AgentEventBus.toolResult("getQuestionContext", true, payload)
         return payload
     }

@@ -6,7 +6,7 @@ object QuestionFingerprintCache {
     private val cache = LinkedHashMap<String, CacheEntry>(maxSize)
 
     @Synchronized
-    fun record(fingerprint: String, questionType: String): QuestionCacheProbe {
+    fun record(fingerprint: String): QuestionCacheProbe {
         if (fingerprint.isBlank()) {
             return QuestionCacheProbe(hit = false, seenCount = 0, fingerprint = "")
         }
@@ -16,7 +16,6 @@ object QuestionFingerprintCache {
         if (existing != null) {
             existing.seenCount += 1
             existing.lastSeenAt = now
-            existing.questionType = questionType
             return QuestionCacheProbe(hit = true, seenCount = existing.seenCount, fingerprint = fingerprint)
         }
 
@@ -29,7 +28,6 @@ object QuestionFingerprintCache {
 
         cache[fingerprint] = CacheEntry(
             fingerprint = fingerprint,
-            questionType = questionType,
             seenCount = 1,
             lastSeenAt = now,
         )
@@ -45,7 +43,6 @@ object QuestionFingerprintCache {
             .map { entry ->
                 mapOf(
                     "fingerprint" to entry.fingerprint,
-                    "questionType" to entry.questionType,
                     "seenCount" to entry.seenCount,
                     "lastSeenAt" to entry.lastSeenAt,
                 )
@@ -54,7 +51,6 @@ object QuestionFingerprintCache {
 
     private data class CacheEntry(
         val fingerprint: String,
-        var questionType: String,
         var seenCount: Int,
         var lastSeenAt: Long,
     )
