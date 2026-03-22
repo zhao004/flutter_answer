@@ -3,6 +3,8 @@ package com.example.flutter_answer.agent
 object UiRegionLocator {
 
     private val optionPattern = Regex("^([A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])[.、:：．\\)]")
+    private val strictQuestionIndexPattern = Regex("^\\s*第\\s*\\d{1,4}\\s*题")
+    private val actionKeywords = listOf("下一题", "下一步", "继续", "提交", "交卷", "确认", "取消", "返回")
 
     fun locate(snapshot: UiSnapshot, page: PageClassification): List<UiRegion> {
         if (snapshot.elements.isEmpty()) {
@@ -34,12 +36,48 @@ object UiRegionLocator {
 
         val inputNodes = snapshot.elements.filter { it.editable }
 
+        val middleTextNodes = snapshot.elements.filter { element ->
+            val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
+            val bottom = element.bounds.getOrNull(3) ?: 0
+            top > titleLimit && bottom < footerStart && hasReadableText(element)
+        }
+        val repeatedClassCount = middleTextNodes
+            .map { element -> element.className.orEmpty() }
+            .filter(String::isNotBlank)
+            .groupingBy { className -> className }
+            .eachCount()
+        val optionSeedNodes = snapshot.elements.filter { element ->
+            val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
+            val bottom = element.bounds.getOrNull(3) ?: 0
+            val text = normalizeText(element.text)
+            val inMiddle = top > titleLimit && bottom < footerStart
+            inMiddle && (element.checkable || optionPattern.containsMatchIn(text))
+        }
+        val optionTopHint = optionSeedNodes
+            .mapNotNull { element -> element.bounds.getOrNull(1) }
+            .minOrNull()
+
         val optionNodes = snapshot.elements.filter { element ->
             val text = normalizeText(element.text)
             val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
             val bottom = element.bounds.getOrNull(3) ?: 0
             val inMiddle = top > titleLimit && bottom < footerStart
-            inMiddle && (element.checkable || optionPattern.containsMatchIn(text))
+            if (!inMiddle) {
+                return@filter false
+            }
+            if (strictQuestionIndexPattern.containsMatchIn(text) || isActionLikeText(text)) {
+                return@filter false
+            }
+            if (element.checkable || optionPattern.containsMatchIn(text)) {
+                return@filter true
+            }
+            if (text.isBlank()) {
+                return@filter false
+            }
+            val classCount = repeatedClassCount[element.className.orEmpty()] ?: 0
+            // 自定义样式题目通常无 checkable，退化为“重复类名 + 中部带状分布”判定。
+            val inOptionBand = optionTopHint?.let { hint -> top >= hint - 24 } ?: (top >= screenHeight * 0.26)
+            inOptionBand && classCount >= 2 && (element.clickable || classCount >= 3)
         }
 
         val dialogNodes = snapshot.elements.filter { element ->
@@ -114,5 +152,12 @@ object UiRegionLocator {
             ?.replace("\\s+".toRegex(), " ")
             ?.trim()
             .orEmpty()
+    }
+
+    private fun isActionLikeText(text: String): Boolean {
+        if (text.isBlank()) {
+            return false
+        }
+        return actionKeywords.any { keyword -> text.contains(keyword) }
     }
 }

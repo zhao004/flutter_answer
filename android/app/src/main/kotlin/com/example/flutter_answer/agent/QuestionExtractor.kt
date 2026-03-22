@@ -5,8 +5,10 @@ object QuestionExtractor {
     private val alphaOptionPattern = Regex("^([A-Ha-h])[.、:：．\\)]\\s*(.+)$")
     private val digitOptionPattern = Regex("^(\\d{1,2})[.、:：．\\)]\\s*(.+)$")
     private val chineseOptionPattern = Regex("^[（(]?([一二三四五六七八九十])[)）.、]\\s*(.+)$")
+    private val looseOptionPrefixPattern = Regex("^([A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])\\s+(.+)$")
     private val blankPlaceholderPattern = Regex("(_{2,}|\\(\\s*\\)|（\\s*）|\\[\\s*\\]|【\\s*】|\\{\\s*\\}|<\\s*>)")
     private val questionIndexPattern = Regex("^\\s*(?:第\\s*)?(\\d{1,4})\\s*(?:题|[.、:：\\)])")
+    private val strictQuestionIndexPattern = Regex("^\\s*第\\s*\\d{1,4}\\s*题")
     private val optionPrefixCleanupPattern = Regex("^[A-Ha-h\\d一二三四五六七八九十]+[.、:：．\\)]\\s*")
 
     private val nextActionKeywords = listOf("下一题", "下一步", "继续", "下页", "完成")
@@ -38,6 +40,10 @@ object QuestionExtractor {
         val regions = UiRegionLocator.locate(snapshot, page)
         val textElements = snapshot.elements.filter { !it.text.isNullOrBlank() }
         val elementById = snapshot.elements.associateBy(UiElement::id)
+        val questionRegionIds = regionElementIds(regions, "question")
+        val optionRegionIds = regionElementIds(regions, "options")
+        val footerRegionIds = regionElementIds(regions, "footer_actions")
+        val popupRegionIds = regionElementIds(regions, "popup")
 
         val actionsFromClickable = snapshot.elements
             .filter { it.clickable }
@@ -77,36 +83,19 @@ object QuestionExtractor {
         val actions = (actionsFromClickable + actionsFromTextHints)
             .distinctBy { action -> "${action.id}:${action.kind}" }
 
-        var fallbackOptionIndex = 0
-        val options = textElements.mapNotNull { element ->
-            val text = cleanText(element.text)
-            val matchedOption = matchOptionText(text)
-            if (matchedOption != null) {
-                val (label, optionText) = matchedOption
-                return@mapNotNull QuestionOption(
-                    id = element.id,
-                    label = normalizeOptionLabel(label),
-                    text = optionText,
-                    checked = element.checked,
-                    normalizedText = normalizeForMatching(optionText),
-                )
+        val optionSourceElements = resolveOptionSourceElements(
+            snapshot = snapshot,
+            optionRegionIds = optionRegionIds,
+            footerRegionIds = footerRegionIds,
+            popupRegionIds = popupRegionIds,
+        )
+        val options = extractOptionsFromRows(optionSourceElements)
+            .filter { option ->
+                option.text.isNotBlank() &&
+                    !isActionLikeText(option.text) &&
+                    !isNoiseQuestionText(option.text)
             }
-
-            if (element.checkable && text.isNotBlank()) {
-                val label = fallbackLabel(fallbackOptionIndex)
-                fallbackOptionIndex += 1
-                val normalizedText = normalizeOptionText(text)
-                return@mapNotNull QuestionOption(
-                    id = element.id,
-                    label = label,
-                    text = normalizedText,
-                    checked = element.checked,
-                    normalizedText = normalizeForMatching(normalizedText),
-                )
-            }
-
-            null
-        }.distinctBy { it.id }
+            .distinctBy { option -> "${option.id}:${option.normalizedText}" }
 
         val inputs = snapshot.elements
             .filter { it.editable }
@@ -133,7 +122,13 @@ object QuestionExtractor {
             .mapNotNull { option -> elementById[option.id]?.bounds?.getOrNull(1) }
             .minOrNull()
 
-        val primaryQuestionCandidates = textElements
+        val questionTextElements = if (questionRegionIds.isNotEmpty()) {
+            textElements.filter { element -> element.id in questionRegionIds }
+        } else {
+            textElements
+        }
+        val excludedQuestionIds = optionSourceElements.map(UiElement::id).toSet() + footerRegionIds + popupRegionIds
+        val primaryQuestionCandidates = questionTextElements
             .map { element -> element to cleanText(element.text) }
             .filter { (_, text) ->
                 text.isNotBlank() &&
@@ -141,6 +136,9 @@ object QuestionExtractor {
                     text !in optionTexts
             }
             .filter { (element, text) ->
+                if (element.id in excludedQuestionIds) {
+                    return@filter false
+                }
                 val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
                 text.length > 1 &&
                     (!element.clickable || text.length >= 10) &&
@@ -151,7 +149,10 @@ object QuestionExtractor {
                     element.bounds.getOrNull(1) ?: Int.MAX_VALUE
                 }.thenBy { (element, _) -> element.depth },
             )
-        val fallbackQuestionCandidates = textElements
+        val fallbackQuestionCandidates = snapshot.elements
+            .filter { element ->
+                element.id !in excludedQuestionIds && !element.text.isNullOrBlank()
+            }
             .map { element -> element to cleanText(element.text) }
             .filter { (_, text) ->
                 text.isNotBlank() &&
@@ -231,7 +232,7 @@ object QuestionExtractor {
                 reason = "题干包含多选关键词。",
                 strength = 0.9,
             )
-            options.isNotEmpty() && checkedOptionCount >= 2 -> QuestionTypeDecision(
+            options.size >= 2 && checkedOptionCount >= 2 -> QuestionTypeDecision(
                 code = "multiple_choice",
                 label = "多选题",
                 reason = "当前已勾选 $checkedOptionCount 个选项，符合多选特征。",
@@ -243,19 +244,19 @@ object QuestionExtractor {
                 reason = "题干包含单选关键词。",
                 strength = 0.88,
             )
-            options.isNotEmpty() && hasCheckboxOption && !hasRadioOption -> QuestionTypeDecision(
+            options.size >= 2 && hasCheckboxOption && !hasRadioOption -> QuestionTypeDecision(
                 code = "multiple_choice",
                 label = "多选题",
                 reason = "检测到选项控件为 CheckBox/CheckedTextView，且未检测到单选控件。",
                 strength = 0.82,
             )
-            options.isNotEmpty() && hasRadioOption -> QuestionTypeDecision(
+            options.size >= 2 && hasRadioOption -> QuestionTypeDecision(
                 code = "single_choice",
                 label = "单选题",
                 reason = "检测到 RadioButton 单选控件。",
                 strength = 0.84,
             )
-            options.isNotEmpty() && (hasOptionLabelSequence || hasCustomOptionLayout) -> QuestionTypeDecision(
+            options.size >= 2 && (hasOptionLabelSequence || hasCustomOptionLayout) -> QuestionTypeDecision(
                 code = "single_choice",
                 label = "单选题",
                 reason = if (hasOptionLabelSequence) {
@@ -281,7 +282,7 @@ object QuestionExtractor {
                 reason = "检测到多个输入框，按填空场景处理。",
                 strength = 0.8,
             )
-            options.isNotEmpty() -> QuestionTypeDecision(
+            options.size >= 2 -> QuestionTypeDecision(
                 code = "single_choice",
                 label = "单选题",
                 reason = "存在候选选项，且没有命中多选/判断强特征。",
@@ -311,7 +312,7 @@ object QuestionExtractor {
                 reason = "题干包含简答关键词，且未检测到选项。",
                 strength = 0.66,
             )
-            hasBooleanOptions && options.size <= 3 -> QuestionTypeDecision(
+            hasBooleanOptions && options.size in 2..3 -> QuestionTypeDecision(
                 code = "true_false",
                 label = "判断题",
                 reason = "选项文本包含判断题特征词，且选项数量较少。",
@@ -462,8 +463,9 @@ object QuestionExtractor {
 
     private fun cleanupQuestionText(raw: String): String {
         val unified = normalizePunctuation(cleanText(raw))
-        val withoutIndex = unified.replace(questionIndexPattern, "")
-        return withoutIndex
+        val withoutNoise = stripQuestionNoiseSegments(unified)
+        val withoutIndex = withoutNoise.replace(questionIndexPattern, "")
+        return collapseDuplicatedQuestionText(withoutIndex)
             .replace("^[※★☆#【】\\[\\]]+".toRegex(), "")
             .replace("\\s+".toRegex(), " ")
             .trim()
@@ -483,6 +485,171 @@ object QuestionExtractor {
         } else {
             normalized
         }
+    }
+
+    private fun regionElementIds(regions: List<UiRegion>, region: String): Set<String> {
+        return regions.firstOrNull { it.region == region }
+            ?.elementIds
+            ?.toSet()
+            .orEmpty()
+    }
+
+    private fun resolveOptionSourceElements(
+        snapshot: UiSnapshot,
+        optionRegionIds: Set<String>,
+        footerRegionIds: Set<String>,
+        popupRegionIds: Set<String>,
+    ): List<UiElement> {
+        // 优先使用区域定位结果，避免全量扫描把题干/底部按钮误收进选项集合。
+        val fromRegion = if (optionRegionIds.isNotEmpty()) {
+            snapshot.elements.filter { element -> element.id in optionRegionIds }
+        } else {
+            emptyList()
+        }
+        if (fromRegion.isNotEmpty()) {
+            return fromRegion
+        }
+
+        val screenHeight = snapshot.elements.maxOfOrNull { element ->
+            element.bounds.getOrNull(3) ?: 0
+        } ?: 0
+        val titleLimit = (screenHeight * 0.2).toInt()
+        val footerStart = (screenHeight * 0.74).toInt()
+        return snapshot.elements.filter { element ->
+            if (element.id in footerRegionIds || element.id in popupRegionIds) {
+                return@filter false
+            }
+            val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
+            val bottom = element.bounds.getOrNull(3) ?: 0
+            val text = cleanText(element.text ?: element.desc)
+            val inMiddle = top >= titleLimit && bottom <= footerStart
+            if (!inMiddle) {
+                return@filter false
+            }
+            if (strictQuestionIndexPattern.containsMatchIn(text)) {
+                return@filter false
+            }
+            // 区域缺失时做保守回退：允许 checkable、标准选项前缀、或中部可点击文本。
+            element.checkable ||
+                matchOptionText(text) != null ||
+                (element.clickable && text.isNotBlank() && !isActionLikeText(text))
+        }
+    }
+
+    private fun extractOptionsFromRows(elements: List<UiElement>): List<QuestionOption> {
+        if (elements.isEmpty()) {
+            return emptyList()
+        }
+        val sorted = elements
+            .filter { element -> element.bounds.size >= 4 }
+            .sortedWith(
+                compareBy<UiElement> { element ->
+                    element.bounds.getOrNull(1) ?: Int.MAX_VALUE
+                }.thenBy { element ->
+                    element.bounds.getOrNull(0) ?: Int.MAX_VALUE
+                },
+            )
+        if (sorted.isEmpty()) {
+            return emptyList()
+        }
+
+        // 通过同一行聚类把“无文本可点击容器 + 子文本节点”合并，避免只拿到不可点击子节点。
+        val rows = mutableListOf<List<UiElement>>()
+        var currentRow = mutableListOf<UiElement>()
+        var currentCenterY = Int.MIN_VALUE
+        sorted.forEach { element ->
+            val top = element.bounds.getOrNull(1) ?: return@forEach
+            val bottom = element.bounds.getOrNull(3) ?: return@forEach
+            val centerY = (top + bottom) / 2
+            if (currentRow.isEmpty()) {
+                currentRow = mutableListOf(element)
+                currentCenterY = centerY
+                return@forEach
+            }
+            if (kotlin.math.abs(centerY - currentCenterY) <= 28) {
+                currentRow += element
+                val size = currentRow.size
+                currentCenterY = ((currentCenterY * (size - 1)) + centerY) / size
+            } else {
+                rows += currentRow
+                currentRow = mutableListOf(element)
+                currentCenterY = centerY
+            }
+        }
+        if (currentRow.isNotEmpty()) {
+            rows += currentRow
+        }
+
+        val output = mutableListOf<QuestionOption>()
+        var fallbackIndex = 0
+        rows.forEach { row ->
+            val sortedRow = row.sortedBy { element -> element.bounds.getOrNull(0) ?: Int.MAX_VALUE }
+            val rowTexts = sortedRow
+                .map { element -> cleanText(element.text ?: element.desc) }
+                .filter(String::isNotBlank)
+                .distinct()
+            if (rowTexts.isEmpty()) {
+                return@forEach
+            }
+
+            val mergedText = rowTexts.joinToString(" ")
+            if (isActionLikeText(mergedText) || isNoiseQuestionText(mergedText)) {
+                return@forEach
+            }
+            if (strictQuestionIndexPattern.containsMatchIn(mergedText)) {
+                return@forEach
+            }
+
+            // 先走显式选项标签匹配，再回退到松散前缀匹配，最后使用整行文本作为选项内容。
+            val explicit = rowTexts
+                .asSequence()
+                .mapNotNull(::matchOptionText)
+                .firstOrNull()
+                ?: matchLooseOptionText(mergedText)
+            val optionText = if (explicit != null) {
+                explicit.second
+            } else {
+                normalizeOptionText(mergedText)
+            }.takeIf { text -> text.isNotBlank() } ?: return@forEach
+            val label = if (explicit != null) {
+                normalizeOptionLabel(explicit.first)
+            } else {
+                fallbackLabel(fallbackIndex)
+            }
+            if (explicit == null) {
+                fallbackIndex += 1
+            }
+            // 锚点优先选择可勾选/可点击节点，保证后续执行点击时尽量可操作。
+            val anchor = sortedRow.firstOrNull { element -> element.checkable }
+                ?: sortedRow.firstOrNull { element -> element.clickable }
+                ?: sortedRow.first()
+            output += QuestionOption(
+                id = anchor.id,
+                label = label,
+                text = optionText,
+                checked = sortedRow.any { element -> element.checked },
+                normalizedText = normalizeForMatching(optionText),
+            )
+        }
+        return output
+    }
+
+    private fun matchLooseOptionText(text: String): Pair<String, String>? {
+        val match = looseOptionPrefixPattern.find(cleanText(text)) ?: return null
+        val label = match.groupValues.getOrNull(1)?.trim().orEmpty()
+        val optionText = normalizeOptionText(match.groupValues.getOrNull(2)?.trim().orEmpty())
+        if (label.isBlank() || optionText.isBlank()) {
+            return null
+        }
+        return label to optionText
+    }
+
+    private fun isActionLikeText(text: String): Boolean {
+        val normalized = cleanText(text)
+        if (normalized.isBlank()) {
+            return false
+        }
+        return inferActionKind(normalized) != null
     }
 
     private fun normalizePunctuation(text: String): String {
@@ -575,7 +742,7 @@ object QuestionExtractor {
         }
         return candidates
             .asSequence()
-            .map { (_, text) -> cleanText(text) }
+            .map { (_, text) -> stripQuestionNoiseSegments(cleanText(text)) }
             .filter { text -> text.isNotBlank() && !isNoiseQuestionText(text) }
             .distinctBy(::normalizeForQuestionDedup)
             .take(limit.coerceAtLeast(1))
@@ -602,6 +769,33 @@ object QuestionExtractor {
                 .lowercase()
                 .replace("\\s+".toRegex(), ""),
         )
+    }
+
+    private fun stripQuestionNoiseSegments(value: String): String {
+        if (value.isBlank()) {
+            return ""
+        }
+        var cleaned = value
+        // 节点文本可能混入“下拉刷新”等提示语，按片段剔除而不是整句丢弃，避免题干被误清空。
+        questionNoiseKeywords.forEach { keyword ->
+            if (keyword.isBlank()) {
+                return@forEach
+            }
+            cleaned = cleaned.replace(keyword, " ")
+            cleaned = cleaned.replace(normalizePunctuation(keyword), " ")
+        }
+        return cleaned
+            .replace("\\s+".toRegex(), " ")
+            .trim()
+    }
+
+    private fun collapseDuplicatedQuestionText(value: String): String {
+        val normalized = cleanText(value)
+        if (normalized.isBlank()) {
+            return ""
+        }
+        val doubled = Regex("^(.{2,160})\\s+\\1$").find(normalized)
+        return doubled?.groupValues?.getOrNull(1)?.trim().takeIf { text -> !text.isNullOrBlank() } ?: normalized
     }
 
     private fun inferActionKind(text: String): String? {
