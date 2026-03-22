@@ -568,7 +568,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         alignment: OverlayAlignment.topLeft,
         height: geometry.height,
         width: geometry.width,
-        positionGravity: PositionGravity.auto,
+        positionGravity: PositionGravity.none,
         startPosition: _overlayWindowPosition,
         overlayTitle: '答题代理悬浮窗',
         overlayContent: '代理控制面板',
@@ -648,7 +648,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     return const _OverlayWindowGeometry(width: 380, height: 560);
   }
 
-  bool _overlayDragEnabledForMode(String mode) => false;
+  bool _overlayDragEnabledForMode(String mode) => mode == 'collapsed';
 
   OverlayPosition _resolveOverlayPositionForMode({
     required String currentMode,
