@@ -13,14 +13,15 @@ object QuestionExtractor {
 
     private val nextActionKeywords = listOf("下一题", "下一步", "继续", "下页", "完成")
     private val submitActionKeywords = listOf("提交", "交卷", "完成考试", "立即交卷")
-    private val confirmActionKeywords = listOf("确认", "确定", "是", "继续提交")
+    private val confirmActionKeywords = listOf("确认", "确定", "继续提交", "确认提交", "确定提交")
     private val cancelActionKeywords = listOf("取消", "返回", "再想想")
     private val multipleKeywords = listOf("多选", "可多选", "不定项", "至少选", "至少选择", "可选择多项")
     private val singleKeywords = listOf("单选", "仅选一项", "只能选一项")
     private val shortAnswerKeywords = listOf("简答", "问答", "论述", "主观题", "作答", "简述", "说明", "分析", "请回答", "写出")
     private val fillBlankKeywords = listOf("填空", "填入", "补全", "填写", "空格", "横线处", "括号内")
     private val booleanKeywords = listOf("判断题", "对错", "正确", "错误")
-    private val booleanOptionKeywords = listOf("正确", "错误", "对", "错", "是", "否")
+    private val booleanOptionKeywords = listOf("正确", "错误", "对", "错", "是", "否", "true", "false")
+    private val voteKeywords = listOf("投票", "票数", "赞成", "反对", "候选", "候选项", "投票项")
     private val requiredKeywords = listOf("必答", "必填", "必做", "*", "（必填）")
     private val questionNoiseKeywords = listOf(
         "下拉可以刷新",
@@ -36,8 +37,7 @@ object QuestionExtractor {
     )
 
     fun extract(snapshot: UiSnapshot): QuestionContext {
-        val page = PageClassifier.classify(snapshot)
-        val regions = UiRegionLocator.locate(snapshot, page)
+        val regions = UiRegionLocator.locate(snapshot)
         val textElements = snapshot.elements.filter { !it.text.isNullOrBlank() }
         val elementById = snapshot.elements.associateBy(UiElement::id)
         val questionRegionIds = regionElementIds(regions, "question")
@@ -176,12 +176,6 @@ object QuestionExtractor {
         val blanks = collectBlanks(cleanedQuestion, inputs)
         val required = detectRequired(cleanedQuestion, snapshot)
 
-        val hasBooleanOptions = options.any { option ->
-            booleanOptionKeywords.any { keyword -> option.text.contains(keyword) }
-        }
-        val hasBooleanOptionPair = options.size == 2 && options.all { option ->
-            booleanOptionKeywords.any { keyword -> option.text.contains(keyword) }
-        }
         val checkedOptionCount = options.count { it.checked }
         val optionElements = options.mapNotNull { option -> elementById[option.id] }
         val hasCheckboxOption = optionElements.any { element ->
@@ -192,143 +186,121 @@ object QuestionExtractor {
         val hasRadioOption = optionElements.any { element ->
             element.className.orEmpty().contains("RadioButton", ignoreCase = true)
         }
-        val hasOptionLabelSequence = detectOptionLabelSequence(options)
-        val hasCustomOptionLayout = detectCustomOptionLayout(optionElements)
         val hasMultipleKeyword = multipleKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
-        val hasSingleKeyword = singleKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
         val hasBooleanKeyword = booleanKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
         val hasShortAnswerKeyword = shortAnswerKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
         val hasFillBlankKeyword = fillBlankKeywords.any { keyword -> normalizedQuestion.contains(keyword) }
         val hasBlankPlaceholder = containsBlankPlaceholder(cleanedQuestion)
+        val hasBooleanOptionPair = options.size in 2..3 && options.all { option ->
+            isBooleanLikeOptionText(option.text)
+        }
+        val hasInputSignal = inputs.isNotEmpty()
+        val hasChoiceSignal = options.isNotEmpty()
+        val hasFillBlankSignal = hasInputSignal &&
+            (inputs.size >= 2 || hasFillBlankKeyword || hasBlankPlaceholder)
+        val hasMultipleSignal = hasChoiceSignal && (
+            hasMultipleKeyword ||
+                (checkedOptionCount >= 2) ||
+                (hasCheckboxOption && !hasRadioOption)
+        )
 
-        val submitOnlyPage = actions.isNotEmpty() && options.isEmpty() && inputs.isEmpty() && cleanedQuestion.isBlank()
+        val submitLikeActionCount = actions.count { action ->
+            action.kind == "submit" || action.kind == "confirm"
+        }
+        val hasVoteKeyword = voteKeywords.any { keyword -> normalizedQuestion.contains(keyword) } ||
+            actions.any { action -> action.text.contains("投票") } ||
+            options.any { option -> voteKeywords.any { keyword -> option.text.contains(keyword) } }
+        val hasQuestionSignals = cleanedQuestion.isNotBlank() || options.isNotEmpty() || inputs.isNotEmpty()
+        val submitOnlyPage = submitLikeActionCount > 0 &&
+            options.isEmpty() &&
+            inputs.isEmpty() &&
+            cleanedQuestion.isBlank()
 
         val questionTypeDecision = when {
-            page.pageType == PageClassifier.VOTE -> QuestionTypeDecision(
+            hasVoteKeyword && hasChoiceSignal -> QuestionTypeDecision(
                 code = "vote_selection",
                 label = "投票项选择页",
-                reason = "页面分类已命中投票页特征。",
-                strength = 0.92,
+                reason = "题干或选项命中投票关键词，且存在可选项。",
+                strength = 0.88,
             )
-            page.pageType == PageClassifier.SUBMIT_CONFIRM_DIALOG || submitOnlyPage -> QuestionTypeDecision(
+            submitOnlyPage -> QuestionTypeDecision(
                 code = "submit_page",
                 label = "交卷页",
                 reason = "检测到提交/确认类操作区，且题目要素不足。",
                 strength = 0.9,
             )
-            hasBooleanKeyword || hasBooleanOptionPair -> QuestionTypeDecision(
+            hasBooleanOptionPair || hasBooleanKeyword -> QuestionTypeDecision(
                 code = "true_false",
                 label = "判断题",
-                reason = if (hasBooleanKeyword) {
+                reason = if (hasBooleanOptionPair) {
+                    "选项命中“对/错/是/否/true/false”判断题特征。"
+                } else {
                     "题干包含判断题关键词。"
-                } else {
-                    "仅检测到 2 个选项，且都命中“对/错/是/否”特征。"
                 },
                 strength = 0.88,
             )
-            hasMultipleKeyword -> QuestionTypeDecision(
-                code = "multiple_choice",
-                label = "多选题",
-                reason = "题干包含多选关键词。",
-                strength = 0.9,
-            )
-            options.size >= 2 && checkedOptionCount >= 2 -> QuestionTypeDecision(
-                code = "multiple_choice",
-                label = "多选题",
-                reason = "当前已勾选 $checkedOptionCount 个选项，符合多选特征。",
-                strength = 0.86,
-            )
-            hasSingleKeyword -> QuestionTypeDecision(
-                code = "single_choice",
-                label = "单选题",
-                reason = "题干包含单选关键词。",
-                strength = 0.88,
-            )
-            options.size >= 2 && hasCheckboxOption && !hasRadioOption -> QuestionTypeDecision(
-                code = "multiple_choice",
-                label = "多选题",
-                reason = "检测到选项控件为 CheckBox/CheckedTextView，且未检测到单选控件。",
-                strength = 0.82,
-            )
-            options.size >= 2 && hasRadioOption -> QuestionTypeDecision(
-                code = "single_choice",
-                label = "单选题",
-                reason = "检测到 RadioButton 单选控件。",
+            hasFillBlankSignal -> QuestionTypeDecision(
+                code = "fill_blank",
+                label = "填空题",
+                reason = "检测到输入框/空白占位符等填空结构信号。",
                 strength = 0.84,
             )
-            options.size >= 2 && (hasOptionLabelSequence || hasCustomOptionLayout) -> QuestionTypeDecision(
-                code = "single_choice",
-                label = "单选题",
-                reason = if (hasOptionLabelSequence) {
-                    "检测到连续选项标签（A/B/C 或 1/2/3）并形成候选选项组。"
+            hasChoiceSignal -> QuestionTypeDecision(
+                code = "choice_question",
+                label = "选择题",
+                reason = if (hasMultipleSignal) {
+                    "检测到多选结构信号，按通用选择题处理。"
                 } else {
-                    "检测到自定义选项布局（无标准单选控件），按客观选择题处理。"
+                    "检测到可选项结构，按通用选择题处理。"
                 },
-                strength = 0.78,
+                strength = if (hasMultipleSignal) 0.82 else 0.76,
             )
-            (hasFillBlankKeyword || hasBlankPlaceholder) && options.isEmpty() -> QuestionTypeDecision(
-                code = "fill_blank",
-                label = "填空题",
-                reason = if (hasFillBlankKeyword) {
-                    "题干包含填空关键词，且未检测到选项。"
+            hasInputSignal -> QuestionTypeDecision(
+                code = "text_input",
+                label = "文本输入题",
+                reason = if (hasShortAnswerKeyword) {
+                    "检测到输入框且题干包含主观作答关键词。"
                 } else {
-                    "题干命中空白占位符（如 ____ / （ ）），且未检测到选项。"
+                    "检测到输入框且无稳定选项结构，按文本输入题处理。"
                 },
-                strength = 0.84,
-            )
-            inputs.size >= 2 -> QuestionTypeDecision(
-                code = "fill_blank",
-                label = "填空题",
-                reason = "检测到多个输入框，按填空场景处理。",
-                strength = 0.8,
-            )
-            options.size >= 2 -> QuestionTypeDecision(
-                code = "single_choice",
-                label = "单选题",
-                reason = "存在候选选项，且没有命中多选/判断强特征。",
-                strength = 0.72,
-            )
-            inputs.isNotEmpty() && hasFillBlankKeyword -> QuestionTypeDecision(
-                code = "fill_blank",
-                label = "填空题",
-                reason = "存在输入框且题干包含填空关键词。",
                 strength = 0.74,
-            )
-            inputs.isNotEmpty() && hasShortAnswerKeyword -> QuestionTypeDecision(
-                code = "short_answer",
-                label = "简答题",
-                reason = "存在输入框且题干包含简答关键词。",
-                strength = 0.74,
-            )
-            inputs.size == 1 -> QuestionTypeDecision(
-                code = "short_answer",
-                label = "简答题",
-                reason = "检测到单个输入框且没有选项控件，按简答场景处理。",
-                strength = 0.7,
-            )
-            hasShortAnswerKeyword && options.isEmpty() -> QuestionTypeDecision(
-                code = "short_answer",
-                label = "简答题",
-                reason = "题干包含简答关键词，且未检测到选项。",
-                strength = 0.66,
-            )
-            hasBooleanOptions && options.size in 2..3 -> QuestionTypeDecision(
-                code = "true_false",
-                label = "判断题",
-                reason = "选项文本包含判断题特征词，且选项数量较少。",
-                strength = 0.64,
             )
             else -> QuestionTypeDecision(
                 code = "unknown",
                 label = "未知题型",
-                reason = "未检测到稳定的题型特征，请结合 UI 快照人工确认。",
-                strength = 0.32,
+                reason = "题型字段仅作辅助，当前未检测到稳定结构信号。",
+                strength = 0.36,
             )
         }
+        val pageType = resolveContextType(
+            submitOnlyPage = submitOnlyPage,
+            hasVoteKeyword = hasVoteKeyword,
+            hasQuestionSignals = hasQuestionSignals,
+        )
+        val pageTypeReason = resolveContextTypeReason(
+            pageType = pageType,
+            submitLikeActionCount = submitLikeActionCount,
+            hasVoteKeyword = hasVoteKeyword,
+            hasQuestionSignals = hasQuestionSignals,
+        )
+        val pageTypeConfidence = estimateContextTypeConfidence(
+            pageType = pageType,
+            question = cleanedQuestion,
+            options = options,
+            inputs = inputs,
+            actions = actions,
+        )
+        val pageScores = buildContextScores(
+            submitLikeActionCount = submitLikeActionCount,
+            hasVoteKeyword = hasVoteKeyword,
+            hasQuestionSignals = hasQuestionSignals,
+            optionCount = options.size,
+            inputCount = inputs.size,
+        )
 
         val confidence = estimateConfidence(
             decisionStrength = questionTypeDecision.strength,
-            pageConfidence = page.confidence,
+            pageConfidence = pageTypeConfidence,
             questionText = cleanedQuestion,
             options = options,
             inputs = inputs,
@@ -346,9 +318,9 @@ object QuestionExtractor {
 
         return QuestionContext(
             screenPackage = snapshot.screen["packageName"]?.toString(),
-            pageType = page.pageType,
-            pageTypeConfidence = page.confidence,
-            pageTypeReason = page.reason,
+            pageType = pageType,
+            pageTypeConfidence = pageTypeConfidence,
+            pageTypeReason = pageTypeReason,
             questionType = questionTypeDecision.code,
             questionTypeLabel = questionTypeDecision.label,
             questionTypeReason = questionTypeDecision.reason,
@@ -366,7 +338,7 @@ object QuestionExtractor {
             fingerprint = fingerprint,
             cacheProbe = cacheProbe,
             regions = regions,
-            pageScores = page.scores,
+            pageScores = pageScores,
         )
     }
 
@@ -427,6 +399,84 @@ object QuestionExtractor {
             return false
         }
         return true
+    }
+
+    private fun resolveContextType(
+        submitOnlyPage: Boolean,
+        hasVoteKeyword: Boolean,
+        hasQuestionSignals: Boolean,
+    ): String {
+        // 不再依赖页面分类器，直接根据题目结构信号给出上下文类型，避免误分类传导到题型识别。
+        return when {
+            submitOnlyPage -> "submit_action_context"
+            hasVoteKeyword -> "vote_context"
+            hasQuestionSignals -> "question_context"
+            else -> "generic_context"
+        }
+    }
+
+    private fun resolveContextTypeReason(
+        pageType: String,
+        submitLikeActionCount: Int,
+        hasVoteKeyword: Boolean,
+        hasQuestionSignals: Boolean,
+    ): String {
+        return when (pageType) {
+            "submit_action_context" -> "检测到 $submitLikeActionCount 个提交/确认动作，且题目结构要素不足。"
+            "vote_context" -> "检测到投票关键词信号，按投票型上下文处理。"
+            "question_context" -> "检测到题干、选项或输入框等题目结构信号。"
+            else -> if (hasQuestionSignals || hasVoteKeyword) {
+                "识别到弱结构信号，暂按通用上下文处理。"
+            } else {
+                "未识别到稳定题目结构信号，按通用上下文处理。"
+            }
+        }
+    }
+
+    private fun estimateContextTypeConfidence(
+        pageType: String,
+        question: String,
+        options: List<QuestionOption>,
+        inputs: List<InputFieldRef>,
+        actions: List<QuestionAction>,
+    ): Double {
+        // 置信度只使用可观测结构特征，弱化不可控页面标签带来的偏差。
+        var score = 0.34
+        if (question.length >= 8) {
+            score += 0.18
+        }
+        if (options.isNotEmpty()) {
+            score += 0.24
+        }
+        if (inputs.isNotEmpty()) {
+            score += 0.2
+        }
+        if (actions.isNotEmpty()) {
+            score += 0.08
+        }
+        if (pageType == "submit_action_context") {
+            score = score.coerceAtMost(0.9) + 0.04
+        }
+        if (pageType == "generic_context" && question.isBlank() && options.isEmpty() && inputs.isEmpty()) {
+            score -= 0.18
+        }
+        return score.coerceIn(0.12, 0.96)
+    }
+
+    private fun buildContextScores(
+        submitLikeActionCount: Int,
+        hasVoteKeyword: Boolean,
+        hasQuestionSignals: Boolean,
+        optionCount: Int,
+        inputCount: Int,
+    ): Map<String, Double> {
+        return linkedMapOf(
+            "submitActionSignal" to submitLikeActionCount.toDouble(),
+            "voteSignal" to if (hasVoteKeyword) 1.0 else 0.0,
+            "questionSignal" to if (hasQuestionSignals) 1.0 else 0.0,
+            "optionCount" to optionCount.toDouble(),
+            "inputCount" to inputCount.toDouble(),
+        )
     }
 
     private fun estimateConfidence(
@@ -686,6 +736,17 @@ object QuestionExtractor {
         return blankPlaceholderPattern.containsMatchIn(question)
     }
 
+    private fun isBooleanLikeOptionText(text: String): Boolean {
+        val normalized = normalizeForMatching(text)
+        if (normalized.isBlank()) {
+            return false
+        }
+        if (booleanOptionKeywords.any { keyword -> normalized == normalizeForMatching(keyword) }) {
+            return true
+        }
+        return normalized.contains("true") || normalized.contains("false")
+    }
+
     private fun fallbackLabel(index: Int): String {
         val labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         if (index in labels.indices) {
@@ -799,6 +860,11 @@ object QuestionExtractor {
     }
 
     private fun inferActionKind(text: String): String? {
+        val normalized = normalizeForMatching(text)
+        // “是/否/对/错/true/false”常见于判断题选项，不应被识别为确认按钮。
+        if (isBooleanLikeOptionText(normalized)) {
+            return null
+        }
         return when {
             submitActionKeywords.any { keyword -> text.contains(keyword) } -> "submit"
             nextActionKeywords.any { keyword -> text.contains(keyword) } -> "next"

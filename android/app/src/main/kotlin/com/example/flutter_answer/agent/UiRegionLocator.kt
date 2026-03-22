@@ -6,7 +6,7 @@ object UiRegionLocator {
     private val strictQuestionIndexPattern = Regex("^\\s*第\\s*\\d{1,4}\\s*题")
     private val actionKeywords = listOf("下一题", "下一步", "继续", "提交", "交卷", "确认", "取消", "返回")
 
-    fun locate(snapshot: UiSnapshot, page: PageClassification): List<UiRegion> {
+    fun locate(snapshot: UiSnapshot): List<UiRegion> {
         if (snapshot.elements.isEmpty()) {
             return emptyList()
         }
@@ -105,11 +105,11 @@ object UiRegionLocator {
 
         val regions = mutableListOf<UiRegion>()
         addRegion(regions, "header", titleNodes, 0.82)
-        addRegion(regions, "question", questionNodes, if (page.pageType == PageClassifier.QUESTION) 0.86 else 0.62)
+        addRegion(regions, "question", questionNodes, if (questionNodes.isNotEmpty()) 0.82 else 0.0)
         addRegion(regions, "options", optionNodes, if (optionNodes.isNotEmpty()) 0.9 else 0.0)
         addRegion(regions, "input", inputNodes, if (inputNodes.isNotEmpty()) 0.9 else 0.0)
         addRegion(regions, "footer_actions", footerNodes, if (footerNodes.isNotEmpty()) 0.84 else 0.0)
-        if (page.pageType == PageClassifier.SUBMIT_CONFIRM_DIALOG || dialogNodes.size >= 4) {
+        if (dialogNodes.size >= 4) {
             addRegion(regions, "popup", dialogNodes, 0.78)
         }
 

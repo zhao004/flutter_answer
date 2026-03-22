@@ -21,7 +21,7 @@ object NativeToolRegistry {
         object : NativeTool {
             override val definition = NativeToolDefinition(
                 name = "get_page_context",
-                description = "Classify the current page and return region segmentation for title, question, options, input, footer, and popup areas.",
+                description = "Analyze the current screen structure and return context summary plus region segmentation for title, question, options, input, footer, and popup areas.",
                 inputSchema = emptySchema(),
                 idempotent = true,
                 category = "inspection",
@@ -34,7 +34,7 @@ object NativeToolRegistry {
         object : NativeTool {
             override val definition = NativeToolDefinition(
                 name = "get_question_context",
-                description = "Extract a structured question context from the current screen. Prefer this before get_ui_snapshot.",
+                description = "Extract a structured question context from the current screen without relying on fixed page classification. Prefer this before get_ui_snapshot.",
                 inputSchema = emptySchema(),
                 idempotent = true,
                 category = "inspection",

@@ -40,7 +40,7 @@ object AccessibilityAgent {
             "hasActiveWindow" to (service?.currentRoot() != null),
             "currentPackageName" to currentPackageName,
             "flow" to flowStateMachine.snapshot(),
-            "latestPageType" to (lastPageClassification?.pageType ?: PageClassifier.UNKNOWN),
+            "latestPageType" to (lastPageClassification?.pageType ?: "unknown_context"),
         )
     }
 
@@ -67,30 +67,31 @@ object AccessibilityAgent {
     }
 
     fun getPageContext(): Map<String, Any?> {
-        transitionTo(AutomationFlowState.PAGE_DETECTING, "开始页面分类。")
+        transitionTo(AutomationFlowState.PAGE_DETECTING, "开始页面结构分析。")
         val service = ExamAccessibilityService.instance
             ?: return reportFailure("getPageContext", "无障碍服务尚未开启。", "service_unavailable")
         val root = service.currentRoot()
-            ?: return reportFailure("getPageContext", "未获取到可用节点，无法分类页面。", "window_unavailable")
+            ?: return reportFailure("getPageContext", "未获取到可用节点，无法分析页面结构。", "window_unavailable")
 
         val snapshot = dumpUiTree(root)
-        val page = PageClassifier.classify(snapshot)
-        val regions = UiRegionLocator.locate(snapshot, page)
-        rememberPageContext(page, regions)
-        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "页面分类完成：${page.pageType}。")
+        val regions = UiRegionLocator.locate(snapshot)
+        val context = buildScreenContextSummary(snapshot, regions)
+        rememberPageContext(context, regions)
+        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "页面结构分析完成：${context.pageType}。")
 
         val payload = success(
-            message = "页面分类完成：${page.pageType}，置信度 ${(page.confidence * 100).toInt()}%。",
+            message = "页面结构分析完成：${context.pageType}，置信度 ${(context.confidence * 100).toInt()}%。",
             extra = mapOf(
-                "page" to page.toMap(),
+                "context" to context.toMap(),
+                "page" to context.toMap(),
                 "regions" to regions.map(UiRegion::toMap),
                 "nodeCount" to snapshot.elements.size,
             ),
         )
         RecognitionTraceStore.record(
             stage = "page_context",
-            pageType = page.pageType,
-            confidence = page.confidence,
+            pageType = context.pageType,
+            confidence = context.confidence,
             ok = true,
             message = payload["message"].toString(),
             payload = mapOf("regionCount" to regions.size),
@@ -108,23 +109,24 @@ object AccessibilityAgent {
             ?: return reportFailure("getUiSnapshot", "未获取到可用节点，当前没有可分析的目标窗口。", "window_unavailable")
 
         val snapshot = dumpUiTree(root)
-        val page = PageClassifier.classify(snapshot)
-        val regions = UiRegionLocator.locate(snapshot, page)
-        rememberPageContext(page, regions)
-        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "UI 快照采集与页面分类完成。")
+        val regions = UiRegionLocator.locate(snapshot)
+        val context = buildScreenContextSummary(snapshot, regions)
+        rememberPageContext(context, regions)
+        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "UI 快照采集与结构分析完成。")
 
         val payload = success(
-            message = "已采集 ${snapshot.elements.size} 个界面节点，页面类型：${page.pageType}。",
+            message = "已采集 ${snapshot.elements.size} 个界面节点，上下文：${context.pageType}。",
             extra = mapOf(
                 "snapshot" to snapshot.toMap(),
-                "page" to page.toMap(),
+                "context" to context.toMap(),
+                "page" to context.toMap(),
                 "regions" to regions.map(UiRegion::toMap),
             ),
         )
         RecognitionTraceStore.record(
             stage = "ui_snapshot",
-            pageType = page.pageType,
-            confidence = page.confidence,
+            pageType = context.pageType,
+            confidence = context.confidence,
             ok = true,
             message = payload["message"].toString(),
             payload = mapOf("nodeCount" to snapshot.elements.size),
@@ -167,7 +169,7 @@ object AccessibilityAgent {
 
         val questionPreview = context.question.take(80).ifBlank { "（题干为空）" }
         val payload = success(
-            message = "页面：${context.pageType}，题型：${context.questionTypeLabel}（${context.questionType}），识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
+            message = "上下文：${context.pageType}，题型（仅辅助）：${context.questionTypeLabel}（${context.questionType}），识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
             extra = mapOf("context" to context.toMap()),
         )
         RecognitionTraceStore.record(
@@ -283,24 +285,27 @@ object AccessibilityAgent {
 
         val service = ExamAccessibilityService.instance
         val beforeFingerprint = captureUiFingerprint(service?.currentRoot())
-        if (!setTextValue(node, text)) {
+        // 输入动作要求“可读回”才能判定成功，避免仅靠界面变化导致误判。
+        val writeResult = writeAndVerifyInput(elementId = elementId, text = text, maxAttempts = 2)
+        if (!writeResult.writeSent) {
             return reportFailure("setText", "节点 $elementId 不支持输入文本。", "set_text_failed")
         }
 
-        Thread.sleep(140)
         transitionTo(AutomationFlowState.RESULT_VERIFYING, "输入动作已发送，开始回读校验。")
         val refreshedText = findNodeById(elementId)?.let(::extractNodeText).orEmpty()
-        val postCheckMatched = refreshedText == text || refreshedText.contains(text)
+        val postCheckMatched = writeResult.matched || isInputTextMatched(refreshedText, text)
         val afterFingerprint = captureUiFingerprint(service?.currentRoot())
         val changed = beforeFingerprint != afterFingerprint
 
-        val result = if (postCheckMatched || changed) {
+        val result = if (postCheckMatched) {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "输入动作回读通过。")
             success(
                 message = "已向节点 $elementId 输入内容。",
                 extra = mapOf(
                     "elementId" to elementId,
                     "text" to text,
+                    "attempts" to writeResult.attempts,
+                    "lastReadText" to writeResult.lastReadText,
                     "postCheckMatched" to postCheckMatched,
                     "postCheckChanged" to changed,
                 ),
@@ -558,19 +563,71 @@ object AccessibilityAgent {
         return reportFailure("waitForIdle", "等待界面稳定超时，已达到 ${timeout}ms。", "timeout")
     }
 
+    private fun buildScreenContextSummary(snapshot: UiSnapshot, regions: List<UiRegion>): PageClassification {
+        // 这里输出的是“结构化上下文摘要”而不是页面分类结果，避免错误分类导致后续策略偏航。
+        val regionNames = regions.map(UiRegion::region).toSet()
+        val hasQuestionSignals = "question" in regionNames || "options" in regionNames || "input" in regionNames
+        val hasPopup = "popup" in regionNames
+        val hasFooterActions = "footer_actions" in regionNames
+        val pageType = when {
+            hasPopup && hasFooterActions -> "submit_action_context"
+            hasPopup -> "dialog_context"
+            hasQuestionSignals -> "question_context"
+            else -> "generic_context"
+        }
+        val reason = when (pageType) {
+            "submit_action_context" -> "检测到弹窗区域与底部动作区，按提交/确认上下文处理。"
+            "dialog_context" -> "检测到中心弹窗区域，按弹窗上下文处理。"
+            "question_context" -> "检测到题干/选项/输入框区域，按题目上下文处理。"
+            else -> "未检测到稳定题目结构，按通用上下文处理。"
+        }
+        var confidence = 0.26
+        if (hasQuestionSignals) {
+            confidence += 0.32
+        }
+        if ("options" in regionNames) {
+            confidence += 0.18
+        }
+        if ("input" in regionNames) {
+            confidence += 0.12
+        }
+        if (hasPopup) {
+            confidence += 0.1
+        }
+        if (hasFooterActions) {
+            confidence += 0.08
+        }
+        val signals = linkedMapOf<String, Any?>(
+            "regionNames" to regionNames.toList(),
+            "nodeCount" to snapshot.elements.size,
+            "packageName" to snapshot.screen["packageName"]?.toString(),
+        )
+        val scores = linkedMapOf(
+            "regionCount" to regions.size.toDouble(),
+            "questionSignal" to if (hasQuestionSignals) 1.0 else 0.0,
+            "popupSignal" to if (hasPopup) 1.0 else 0.0,
+            "footerSignal" to if (hasFooterActions) 1.0 else 0.0,
+        )
+        return PageClassification(
+            pageType = pageType,
+            confidence = confidence.coerceIn(0.12, 0.96),
+            reason = reason,
+            scores = scores,
+            signals = signals,
+        )
+    }
+
     private fun rememberPageContext(page: PageClassification, regions: List<UiRegion>) {
         lastPageClassification = page
         lastRegions = regions
     }
 
     private fun enrichContextWithCachedActions(context: QuestionContext): QuestionContext {
-        if (context.pageType != PageClassifier.QUESTION && context.pageType != PageClassifier.VOTE) {
-            return context
-        }
         val actions = context.actions.toMutableList()
         val existingKinds = actions.map { action -> action.kind }.toSet()
+        val actionCacheScope = resolveActionCacheScope(context.pageType, context.screenPackage)
 
-        if ("next" !in existingKinds && hasCachedAction(kind = "next", pageType = context.pageType)) {
+        if ("next" !in existingKinds && hasCachedAction(kind = "next", contextScope = actionCacheScope)) {
             actions += QuestionAction(
                 id = "action:next",
                 text = "下一题（缓存定位）",
@@ -579,7 +636,7 @@ object AccessibilityAgent {
             )
         }
 
-        if ("submit" !in existingKinds && hasCachedAction(kind = "submit", pageType = context.pageType)) {
+        if ("submit" !in existingKinds && hasCachedAction(kind = "submit", contextScope = actionCacheScope)) {
             actions += QuestionAction(
                 id = "action:submit",
                 text = "提交（缓存定位）",
@@ -594,8 +651,8 @@ object AccessibilityAgent {
         return context.copy(actions = actions)
     }
 
-    private fun hasCachedAction(kind: String, pageType: String): Boolean {
-        val exactKey = buildActionLocatorKey(pageType, kind)
+    private fun hasCachedAction(kind: String, contextScope: String): Boolean {
+        val exactKey = buildActionLocatorKey(contextScope, kind)
         if (actionLocatorCache.containsKey(exactKey)) {
             return true
         }
@@ -603,9 +660,10 @@ object AccessibilityAgent {
     }
 
     private fun cacheActionLocators(context: QuestionContext) {
+        val actionCacheScope = resolveActionCacheScope(context.pageType, context.screenPackage)
         context.actions.forEach { action ->
             val locator = locatorCache[action.id] ?: return@forEach
-            val key = buildActionLocatorKey(context.pageType, action.kind)
+            val key = buildActionLocatorKey(actionCacheScope, action.kind)
             actionLocatorCache[key] = locator.copy(pageType = context.pageType)
         }
         while (actionLocatorCache.size > actionCacheMaxSize) {
@@ -617,15 +675,28 @@ object AccessibilityAgent {
     private fun rememberLocatorForAction(elementId: String) {
         val locator = locatorCache[elementId] ?: return
         val pageType = currentPageType()
+        val actionCacheScope = currentActionCacheScope()
         val inferredKind = inferActionKind(locator)
         if (inferredKind.isBlank()) {
             return
         }
-        actionLocatorCache[buildActionLocatorKey(pageType, inferredKind)] = locator.copy(pageType = pageType)
+        actionLocatorCache[buildActionLocatorKey(actionCacheScope, inferredKind)] = locator.copy(pageType = pageType)
     }
 
-    private fun buildActionLocatorKey(pageType: String, kind: String): String {
-        return "$pageType:${kind.lowercase()}"
+    private fun resolveActionCacheScope(pageType: String, packageName: String?): String {
+        // 缓存键加入包名，避免不同应用/页面之间出现动作定位串扰。
+        val safePackage = packageName?.trim().orEmpty().ifBlank { "unknown_package" }
+        return "$safePackage#$pageType"
+    }
+
+    private fun currentActionCacheScope(): String {
+        val packageName = lastQuestionContext?.screenPackage
+            ?: lastPageClassification?.signals?.get("packageName")?.toString()
+        return resolveActionCacheScope(currentPageType(), packageName)
+    }
+
+    private fun buildActionLocatorKey(contextScope: String, kind: String): String {
+        return "$contextScope:${kind.lowercase()}"
     }
 
     private fun inferActionKind(locator: NodeLocator): String {
@@ -757,8 +828,8 @@ object AccessibilityAgent {
         if (kind.isBlank()) {
             return null
         }
-        val pageType = currentPageType()
-        val exact = actionLocatorCache[buildActionLocatorKey(pageType, kind)]
+        val actionCacheScope = currentActionCacheScope()
+        val exact = actionLocatorCache[buildActionLocatorKey(actionCacheScope, kind)]
         if (exact != null) {
             return exact
         }
@@ -902,6 +973,72 @@ object AccessibilityAgent {
         return false
     }
 
+    private fun writeAndVerifyInput(
+        elementId: String,
+        text: String,
+        maxAttempts: Int,
+    ): InputWriteResult {
+        var attempts = 0
+        var writeSent = false
+        var matched = false
+        var lastReadText = ""
+
+        while (attempts < maxAttempts) {
+            attempts += 1
+            val targetNode = findNodeById(elementId) ?: break
+            if (!setTextValue(targetNode, text)) {
+                continue
+            }
+            writeSent = true
+            Thread.sleep(140)
+            val refreshedNode = findNodeById(elementId)
+            lastReadText = extractNodeText(refreshedNode)
+            if (!isInputTextMatched(lastReadText, text)) {
+                continue
+            }
+            // 输入后主动清焦点，触发部分题库页面的“失焦保存”逻辑，减少下一题后答案丢失。
+            clearInputFocus(refreshedNode)
+            Thread.sleep(80)
+            lastReadText = extractNodeText(findNodeById(elementId))
+            matched = isInputTextMatched(lastReadText, text)
+            if (matched) {
+                break
+            }
+        }
+
+        return InputWriteResult(
+            writeSent = writeSent,
+            matched = matched,
+            attempts = attempts,
+            lastReadText = lastReadText,
+        )
+    }
+
+    private fun clearInputFocus(node: AccessibilityNodeInfo?): Boolean {
+        var current = node
+        var cleared = false
+        while (current != null) {
+            if (current.isFocused) {
+                cleared = current.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS) || cleared
+            }
+            current = current.parent
+        }
+        return cleared
+    }
+
+    private fun isInputTextMatched(actual: String, expected: String): Boolean {
+        val normalizedActual = normalizeInputText(actual)
+        val normalizedExpected = normalizeInputText(expected)
+        if (normalizedExpected.isBlank()) {
+            return normalizedActual.isBlank()
+        }
+        return normalizedActual == normalizedExpected || normalizedActual.contains(normalizedExpected)
+    }
+
+    private fun normalizeInputText(value: String): String {
+        return value.replace("\\s+".toRegex(), " ").trim()
+    }
+
     private fun extractNodeText(node: AccessibilityNodeInfo?): String {
         if (node == null) {
             return ""
@@ -1027,7 +1164,7 @@ object AccessibilityAgent {
     }
 
     private fun currentPageType(): String {
-        return lastQuestionContext?.pageType ?: lastPageClassification?.pageType ?: PageClassifier.UNKNOWN
+        return lastQuestionContext?.pageType ?: lastPageClassification?.pageType ?: "unknown_context"
     }
 
     private fun currentPageConfidence(): Double {
@@ -1074,4 +1211,11 @@ object AccessibilityAgent {
             return "n$index"
         }
     }
+
+    private data class InputWriteResult(
+        val writeSent: Boolean,
+        val matched: Boolean,
+        val attempts: Int,
+        val lastReadText: String,
+    )
 }

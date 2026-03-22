@@ -20,8 +20,9 @@ class LangChainAgentRuntimeService {
   LangChainAgentRuntimeService({required AgentPlatformGateway platformGateway})
     : _platformGateway = platformGateway;
 
-  static const int _executorMaxIterations = 100;
-  static const Duration _executorMaxExecutionTime = Duration(minutes: 1);
+  // 放宽默认执行阈值，降低复杂题面下的误触发概率，同时保留兜底保护。
+  static const int _executorMaxIterations = 180;
+  static const Duration _executorMaxExecutionTime = Duration(minutes: 3);
   static const String _executorLimitStopMessage =
       'Agent stopped due to iteration limit or time limit.';
 
@@ -286,12 +287,16 @@ System architecture:
 
 Execution rules:
 - Start by understanding the current page before taking action.
-- Prefer `get_page_context` first, then `get_question_context`, and use `get_ui_snapshot` only when needed for raw node details.
+- Use `get_question_context` as the primary source of question data, and use `get_page_context` only as supplemental structural context.
+- Avoid relying on fixed page-type assumptions; decide based on extracted question text, options, inputs, and actions.
+- Treat `questionType` as a hint only. When it conflicts with visible options or input fields, trust structure and current UI state first.
 - After finishing the current question input/selection, you must attempt to advance using the `next` action when present.
 - If `next` is not explicitly listed but a progress action is likely, re-read context and try available candidate navigation actions before stopping.
 - After `click_element`, `toggle_element`, `set_text`, `scroll_screen`, or `press_global`, call `wait_for_idle` before reading the UI again.
+- For text-input/fill-blank questions, verify each required input is actually written by re-reading `get_question_context` before moving to next.
+- For true/false questions, match options using text features like `对/错/是/否/true/false` and avoid using confirm-style assumptions.
 - If a tool fails, re-read the current context before retrying.
-- If the same strategy fails repeatedly and progress stalls, stop and return a concise blocker summary instead of looping.
+- Do not repeat the same failed strategy more than 2 times. If progress still stalls, stop and return a concise blocker summary instead of looping.
 - Keep actions minimal and deterministic.
 - If auto submit is disabled, stop at the submit page and explain that manual confirmation is required.
 - If auto submit is enabled, you may submit only when the submit intent is clear from the UI.
@@ -344,7 +349,7 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
   }
 
   String _buildExecutorLimitMessage({required int step}) {
-    return 'Agent 已达到执行保护上限（最多 $_executorMaxIterations 轮或 ${_executorMaxExecutionTime.inMinutes} 分钟，当前执行 $step 步）并自动停止。请先确认题目页面已稳定，再缩小任务范围后重试。';
+    return 'Agent 已达到执行保护上限（最多 $_executorMaxIterations 轮或 ${_executorMaxExecutionTime.inMinutes} 分钟，当前执行 $step 步）并自动停止。已自动启用放宽阈值；若仍无法推进，请检查当前页面是否可操作并提供更明确任务目标后重试。';
   }
 
   String _normalizeRuntimeError(Object error) {
