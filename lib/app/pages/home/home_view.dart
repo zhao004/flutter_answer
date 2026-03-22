@@ -443,7 +443,7 @@ class _AgentConfigCard extends StatelessWidget {
                 decoration: InputDecoration(
                   border: const OutlineInputBorder(),
                   labelText: '提供商 API 密钥',
-                  hintText: hasApiKey ? '仅保存在内存中' : 'sk-...',
+                  hintText: hasApiKey ? '已保存到本地，可直接覆盖' : 'sk-...',
                 ),
               ),
               const SizedBox(height: 12),

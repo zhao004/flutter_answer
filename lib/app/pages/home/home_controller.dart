@@ -7,8 +7,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:get/get.dart';
 
-import '../../services/agent_config_store.dart';
-import '../../services/agent_bridge.dart';
+import '../../agent/data/agent_config_store.dart';
+import '../../agent/data/agent_platform_gateway.dart';
+import '../../agent/domain/models/agent_config.dart';
+import '../../agent/domain/models/agent_run_state.dart';
+import '../../agent/domain/models/connectivity_probe_result.dart';
+import '../../agent/domain/models/native_platform_event.dart';
+import '../../agent/domain/models/native_tool_execution.dart';
+import '../../agent/domain/services/langchain_agent_runtime_service.dart';
 import '../../services/overlay_message_bridge.dart';
 
 class ProbeConversationMessage {
@@ -46,10 +52,17 @@ class ProbeConversationMessage {
 }
 
 class HomeController extends GetxController with WidgetsBindingObserver {
-  HomeController();
+  HomeController({
+    required AgentPlatformGateway platformGateway,
+    required AgentConfigStore configStore,
+    required LangChainAgentRuntimeService runtimeService,
+  }) : _platformGateway = platformGateway,
+       _configStore = configStore,
+       _runtimeService = runtimeService;
 
-  final AgentBridge _agentBridge = AgentBridge.instance;
-  final AgentConfigStore _configStore = AgentConfigStore.instance;
+  final AgentPlatformGateway _platformGateway;
+  final AgentConfigStore _configStore;
+  final LangChainAgentRuntimeService _runtimeService;
   final ReceivePort _mainReceivePort = ReceivePort();
 
   final serviceStatus = <String, dynamic>{}.obs;
@@ -62,7 +75,8 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final apiKeyController = TextEditingController();
   final modelController = TextEditingController(text: 'gpt-5-mini');
   final taskPromptController = TextEditingController(
-    text: '读取当前答题页面并继续作答，优先使用工具，不要输出解释。',
+    text:
+        'Read the current question page, answer carefully, prefer tools, and stop at the submit page unless auto submit is enabled.',
   );
   final connectivityInputController = TextEditingController(
     text: '请回复“模型连通正常”，并用一句话说明你当前可以继续对话。',
@@ -78,9 +92,13 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final connectivityLastOk = RxnBool();
   final connectivityLatencyMs = RxnInt();
 
-  StreamSubscription<Map<String, dynamic>>? _eventSubscription;
+  StreamSubscription<NativePlatformEvent>? _eventSubscription;
   StreamSubscription<dynamic>? _overlaySubscription;
   StreamSubscription<dynamic>? _overlayPortSubscription;
+
+  AgentConfig _currentConfig = const AgentConfig();
+  AgentRunState _currentRunState = AgentRunState.idle();
+  bool _systemSettingsFlowActive = false;
 
   bool get agentRunning => agentRunStatus['running'] == true;
 
@@ -89,16 +107,18 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     super.onInit();
     WidgetsBinding.instance.addObserver(this);
     _registerMainPort();
-    _eventSubscription = _agentBridge.events().listen(_handleNativeEvent);
+    _eventSubscription = _platformGateway.events().listen(_handleNativeEvent);
     _overlaySubscription = FlutterOverlayWindow.overlayListener.listen(
       _handleOverlayEvent,
     );
+    _applyRunState(_currentRunState, updatePayload: false);
     unawaited(_bootstrap());
   }
 
   @override
   void onClose() {
     WidgetsBinding.instance.removeObserver(this);
+    _runtimeService.requestStop();
     _eventSubscription?.cancel();
     _overlaySubscription?.cancel();
     _overlayPortSubscription?.cancel();
@@ -115,14 +135,18 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      if (_systemSettingsFlowActive || isBusy.value) {
+        _systemSettingsFlowActive = false;
+        isBusy.value = false;
+      }
       unawaited(_refreshSystemState());
     }
   }
 
   Future<void> _bootstrap() async {
     await _restoreSavedConfig();
-    await refreshServiceStatus();
     await refreshAgentConfig();
+    await refreshServiceStatus();
     await refreshAgentRunStatus();
     await syncOverlayState();
   }
@@ -139,33 +163,25 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   Future<void> _restoreSavedConfig() async {
     final savedConfig = await _configStore.load();
     if (savedConfig == null) {
+      _syncAgentConfig(_currentConfig.toPublicMap());
       return;
     }
 
-    _syncAgentConfig(savedConfig);
-    final payload = await _agentBridge.setAgentConfig(
-      providerUrl: savedConfig['providerUrl']?.toString() ?? '',
-      model: savedConfig['model']?.toString() ?? modelController.text,
-      taskPrompt:
-          savedConfig['taskPrompt']?.toString() ?? taskPromptController.text,
-      autoSubmit: savedConfig['autoSubmit'] == true,
-    );
-    final configPayload = _normalizeMap(payload['config']) ?? payload;
-    _syncAgentConfig(configPayload);
+    _currentConfig = savedConfig;
+    _syncAgentConfig(_currentConfig.toPublicMap());
+    apiKeyController.text = _currentConfig.apiKey;
   }
 
   Future<void> refreshServiceStatus() async {
     await _runAction(() async {
-      final payload = await _agentBridge.getServiceStatus();
-      serviceStatus.assignAll(payload);
-      _setPayload(payload);
-      await _pushOverlayEvent('service_status', payload);
+      final payload = await _executeTool('get_service_status');
+      _setPayload(payload.toMap());
     });
   }
 
   Future<void> openAccessibilitySettings() async {
-    await _runAction(() async {
-      final payload = await _agentBridge.openAccessibilitySettings();
+    await _launchSystemSettingsFlow(() async {
+      final payload = await _platformGateway.openAccessibilitySettings();
       _setPayload(payload);
     });
   }
@@ -176,28 +192,31 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       return;
     }
 
-    _appendLog('info', enabled ? '请在系统设置中开启无障碍服务。' : '请在系统设置中关闭无障碍服务。');
+    _appendLog('info', enabled ? '请在系统设置中启用无障碍服务。' : '请在系统设置中关闭无障碍服务。');
     await openAccessibilitySettings();
   }
 
   Future<void> fetchQuestionContext() async {
     await _runAction(() async {
-      final payload = await _agentBridge.getQuestionContext();
-      _setPayload(payload);
+      final payload = await _executeTool('get_question_context');
+      _setPayload(payload.toMap());
     });
   }
 
   Future<void> fetchUiSnapshot() async {
     await _runAction(() async {
-      final payload = await _agentBridge.getUiSnapshot();
-      _setPayload(payload);
+      final payload = await _executeTool('get_ui_snapshot');
+      _setPayload(payload.toMap());
     });
   }
 
   Future<void> waitForIdle() async {
     await _runAction(() async {
-      final payload = await _agentBridge.waitForIdle();
-      _setPayload(payload);
+      final payload = await _executeTool(
+        'wait_for_idle',
+        arguments: <String, dynamic>{'timeoutMs': 1200},
+      );
+      _setPayload(payload.toMap());
     });
   }
 
@@ -206,37 +225,31 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     String amount = 'medium',
   }) async {
     await _runAction(() async {
-      final payload = await _agentBridge.scrollScreen(
-        direction: direction,
-        amount: amount,
+      final payload = await _executeTool(
+        'scroll_screen',
+        arguments: <String, dynamic>{'direction': direction, 'amount': amount},
       );
-      _setPayload(payload);
+      _setPayload(payload.toMap());
     });
   }
 
   Future<void> pressGlobal({String action = 'back'}) async {
     await _runAction(() async {
-      final payload = await _agentBridge.pressGlobal(action);
-      _setPayload(payload);
+      final payload = await _executeTool(
+        'press_global',
+        arguments: <String, dynamic>{'action': action},
+      );
+      _setPayload(payload.toMap());
     });
   }
 
   Future<void> refreshAgentConfig() async {
-    await _runAction(() async {
-      final payload = await _agentBridge.getAgentConfig();
-      _syncAgentConfig(payload);
-      _setPayload(payload);
-      await _pushOverlayEvent('agent_config', payload);
-    });
+    _syncAgentConfig(_currentConfig.toPublicMap());
+    _setPayload(_currentConfig.toPublicMap());
   }
 
   Future<void> refreshAgentRunStatus() async {
-    await _runAction(() async {
-      final payload = await _agentBridge.getAgentRunStatus();
-      agentRunStatus.assignAll(payload);
-      _setPayload(payload);
-      await _pushOverlayEvent('agent_status', payload);
-    });
+    _applyRunState(_currentRunState);
   }
 
   Future<bool> saveAgentConfig({bool announce = true}) async {
@@ -246,77 +259,116 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       return false;
     }
 
-    var saved = false;
-    await _runAction(() async {
-      final payload = await _agentBridge.setAgentConfig(
-        providerUrl: providerUrl,
-        apiKey: apiKeyController.text.trim().isEmpty
-            ? null
-            : apiKeyController.text.trim(),
-        model: modelController.text.trim(),
-        taskPrompt: taskPromptController.text.trim(),
-        autoSubmit: autoSubmit.value,
+    _currentConfig = AgentConfig(
+      providerUrl: providerUrl,
+      apiKey: apiKeyController.text.trim(),
+      model: modelController.text.trim().isEmpty
+          ? 'gpt-5-mini'
+          : modelController.text.trim(),
+      taskPrompt: taskPromptController.text.trim().isEmpty
+          ? const AgentConfig().taskPrompt
+          : taskPromptController.text.trim(),
+      autoSubmit: autoSubmit.value,
+    );
+
+    await _configStore.save(_currentConfig);
+    _syncAgentConfig(_currentConfig.toPublicMap());
+    apiKeyController.text = _currentConfig.apiKey;
+    _setPayload(_currentConfig.toPublicMap());
+    await _pushOverlayEvent('agent_config', _currentConfig.toPublicMap());
+
+    if (announce) {
+      _appendLog(
+        'info',
+        'Agent config, including the API key, is now saved locally.',
       );
-      final configPayload = _normalizeMap(payload['config']) ?? payload;
-      _syncAgentConfig(configPayload);
-      await _configStore.save(
-        providerUrl: providerUrl,
-        model: modelController.text.trim(),
-        taskPrompt: taskPromptController.text.trim(),
-        autoSubmit: autoSubmit.value,
-      );
-      if (configPayload['hasApiKey'] == true) {
-        apiKeyController.clear();
-      }
-      _setPayload(payload);
-      await _pushOverlayEvent('agent_config', configPayload);
-      if (announce) {
-        _appendLog('info', '代理配置已保存到本地，API 密钥仅保存在当前会话内存。');
-      }
-      saved = true;
-    });
-    return saved;
+    }
+
+    return true;
   }
 
   Future<void> startAgentRun() async {
-    final saved = await saveAgentConfig(announce: false);
-    if (!saved) {
-      final failure = <String, dynamic>{
-        ...agentRunStatus,
-        'running': false,
-        'status': 'failed',
-        'message': '请先填写提供商 URL。',
-        'updatedAt': DateTime.now().millisecondsSinceEpoch,
-      };
-      agentRunStatus.assignAll(failure);
-      _setPayload(failure);
-      await _pushOverlayEvent('agent_status', failure);
+    if (agentRunning) {
       return;
     }
-    await _runAction(() async {
-      final payload = await _agentBridge.startAgentRun();
-      final statusPayload = _resolveAgentStatusPayload(
-        payload,
-        fallbackStatus: 'failed',
+
+    final saved = await saveAgentConfig(announce: false);
+    if (!saved) {
+      _applyRunState(
+        AgentRunState.idle().copyWith(
+          running: false,
+          status: 'failed',
+          message: '请先填写提供商 URL。',
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
       );
-      agentRunStatus.assignAll(statusPayload);
-      _setPayload(statusPayload);
-      await _pushOverlayEvent('agent_status', statusPayload);
-    });
+      return;
+    }
+
+    if (!_currentConfig.hasApiKey) {
+      _applyRunState(
+        AgentRunState.idle().copyWith(
+          running: false,
+          status: 'failed',
+          message: 'Set an API key before running the agent.',
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      return;
+    }
+
+    unawaited(_runAgentLoop());
+  }
+
+  Future<void> _runAgentLoop() async {
+    final starting = _currentRunState.copyWith(
+      running: true,
+      status: 'starting',
+      message: 'Preparing LangChain agent runtime.',
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    _applyRunState(starting);
+
+    final finalState = await _runtimeService.run(
+      config: _currentConfig,
+      onStatus: (AgentRunState state) {
+        _applyRunState(state);
+      },
+      onLog: _appendLog,
+      onToolResult: (NativeToolExecutionResult result) {
+        _setPayload(result.toMap());
+      },
+    );
+
+    _applyRunState(finalState);
   }
 
   Future<void> stopAgentRun() async {
-    await _runAction(() async {
-      final payload = await _agentBridge.stopAgentRun();
-      final statusPayload = _resolveAgentStatusPayload(payload);
-      agentRunStatus.assignAll(statusPayload);
-      _setPayload(statusPayload);
-      await _pushOverlayEvent('agent_status', statusPayload);
-    });
+    _runtimeService.requestStop();
+    if (!agentRunning) {
+      _applyRunState(
+        _currentRunState.copyWith(
+          running: false,
+          status: 'idle',
+          message: 'Agent is not running.',
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      return;
+    }
+
+    _applyRunState(
+      _currentRunState.copyWith(
+        running: true,
+        status: 'stopping',
+        message: 'Stop requested by operator.',
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
   }
 
   Future<void> sendConnectivityMessage() async {
-    if (isConnectivityTesting.value || isBusy.value) {
+    if (isConnectivityTesting.value || isBusy.value || agentRunning) {
       return;
     }
 
@@ -331,7 +383,13 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     final saved = await saveAgentConfig(announce: false);
     if (!saved) {
       connectivityLastOk.value = false;
-      connectivityNotice.value = '请先完善提供商配置后再测试模型连通性。';
+      connectivityNotice.value = '请先补全提供商配置后再测试模型连通性。';
+      return;
+    }
+
+    if (!_currentConfig.hasApiKey) {
+      connectivityLastOk.value = false;
+      connectivityNotice.value = '请先输入 API key。';
       return;
     }
 
@@ -346,36 +404,14 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     isConnectivityTesting.value = true;
 
     try {
-      final payload = await _agentBridge.sendConnectivityProbe(
+      final payload = await _runtimeService.sendConnectivityProbe(
+        config: _currentConfig,
         messages: connectivityMessages
             .where((message) => message.includeInContext)
             .map((message) => message.toRequestMap())
             .toList(),
       );
-      final ok = payload['ok'] == true;
-      final reply = payload['reply']?.toString().trim() ?? '';
-      final latencyMs = _readInt(payload['latencyMs']);
-      connectivityLastOk.value = ok;
-      connectivityLatencyMs.value = latencyMs;
-      if (ok && reply.isNotEmpty) {
-        connectivityMessages.add(
-          ProbeConversationMessage(role: 'assistant', content: reply),
-        );
-        connectivityNotice.value = '模型回复成功，可继续对话。';
-        _appendLog(
-          'info',
-          '模型连通性测试成功${latencyMs == null ? '' : '，耗时 ${latencyMs}ms'}。',
-        );
-      } else {
-        _markConnectivityMessageFailed(pendingIndex);
-        final message = payload['message']?.toString().trim();
-        connectivityNotice.value = (message == null || message.isEmpty)
-            ? '模型未返回有效回复。'
-            : message;
-        connectivityLastOk.value = false;
-        _appendLog('error', '模型连通性测试失败：${connectivityNotice.value}');
-      }
-      _setPayload(payload);
+      _handleConnectivityResult(payload, pendingIndex);
     } catch (error) {
       _markConnectivityMessageFailed(pendingIndex);
       connectivityLastOk.value = false;
@@ -403,15 +439,33 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> requestOverlayPermission() async {
-    await _runAction(() async {
-      final granted = await FlutterOverlayWindow.requestPermission() == true;
-      overlayPermissionGranted.value = granted;
-      _appendLog(
-        granted ? 'info' : 'warn',
-        granted ? '已获得悬浮窗权限。' : '尚未获得悬浮窗权限。',
+    if (_systemSettingsFlowActive) {
+      return;
+    }
+
+    _systemSettingsFlowActive = true;
+    _appendLog('info', '正在打开系统悬浮窗权限页面。');
+    try {
+      unawaited(
+        FlutterOverlayWindow.requestPermission()
+            .then((bool? granted) async {
+              overlayPermissionGranted.value = granted == true;
+              if (granted == true) {
+                _appendLog('info', '已获得悬浮窗权限。');
+              }
+              await _broadcastOverlaySnapshot();
+            })
+            .catchError((Object error) {
+              _appendLog('error', error.toString());
+            })
+            .whenComplete(() {
+              _systemSettingsFlowActive = false;
+            }),
       );
-      await _broadcastOverlaySnapshot();
-    });
+    } catch (error) {
+      _systemSettingsFlowActive = false;
+      _appendLog('error', error.toString());
+    }
   }
 
   Future<void> toggleOverlayPermission(bool enabled) async {
@@ -476,31 +530,20 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  void _handleNativeEvent(Map<String, dynamic> event) {
-    final type = event['type'] as String? ?? 'event';
-    if (type == 'log') {
-      _appendLog(
-        event['level']?.toString() ?? 'info',
-        event['message']?.toString() ?? '',
-      );
+  void _handleNativeEvent(NativePlatformEvent event) {
+    if (event.type == 'log') {
+      _appendLog(event.level ?? 'info', event.message ?? '');
       return;
     }
 
-    if (type == 'tool_result') {
-      final payload = _normalizeMap(event['payload']);
-      if (payload != null) {
-        _setPayload(payload);
-      }
-      return;
-    }
-
-    if (type == 'agent_status') {
-      final payload = _normalizeMap(event['payload']);
-      if (payload != null) {
-        agentRunStatus.assignAll(payload);
-        _setPayload(payload);
-        unawaited(_pushOverlayEvent('agent_status', payload));
-      }
+    if (event.type == 'tool_result') {
+      final envelope = <String, dynamic>{
+        'tool': event.tool,
+        'ok': event.ok,
+        'result': event.payload ?? const <String, dynamic>{},
+        'timestamp': event.timestamp,
+      };
+      _setPayload(envelope);
     }
   }
 
@@ -575,27 +618,67 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     await syncOverlayState();
   }
 
+  Future<void> _launchSystemSettingsFlow(Future<void> Function() action) async {
+    if (_systemSettingsFlowActive) {
+      return;
+    }
+
+    _systemSettingsFlowActive = true;
+    try {
+      await action();
+    } catch (error) {
+      _systemSettingsFlowActive = false;
+      final payload = <String, dynamic>{
+        'ok': false,
+        'message': error.toString(),
+      };
+      _setPayload(payload);
+      _appendLog('error', error.toString());
+    }
+  }
+
   void _syncAgentConfig(Map<String, dynamic> payload) {
     agentConfig.assignAll(payload);
     providerUrlController.text = payload['providerUrl']?.toString() ?? '';
     modelController.text = payload['model']?.toString() ?? modelController.text;
     taskPromptController.text =
         payload['taskPrompt']?.toString() ?? taskPromptController.text;
+    apiKeyController.text = _currentConfig.apiKey;
     autoSubmit.value = payload['autoSubmit'] == true;
-    if (payload['hasApiKey'] != true) {
-      apiKeyController.clear();
+  }
+
+  void _applyRunState(AgentRunState state, {bool updatePayload = true}) {
+    _currentRunState = state;
+    agentRunStatus.assignAll(state.toMap());
+    if (updatePayload) {
+      _setPayload(state.toMap());
+    } else {
+      unawaited(_pushOverlayEvent('agent_status', state.toMap()));
     }
   }
 
   void _setPayload(Map<String, dynamic> payload) {
-    if (payload.containsKey('enabled')) {
+    final resultPayload = _normalizeMap(payload['result']);
+    final toolName = payload['tool']?.toString();
+
+    if (toolName == 'get_service_status' && resultPayload != null) {
+      serviceStatus.assignAll(resultPayload);
+      unawaited(_pushOverlayEvent('service_status', resultPayload));
+    } else if (payload.containsKey('enabled')) {
       serviceStatus.assignAll(payload);
       unawaited(_pushOverlayEvent('service_status', payload));
     }
+
+    if (payload.containsKey('hasApiKey') || payload.containsKey('taskPrompt')) {
+      agentConfig.assignAll(payload);
+      unawaited(_pushOverlayEvent('agent_config', payload));
+    }
+
     if (payload.containsKey('running') || payload.containsKey('status')) {
       agentRunStatus.assignAll(payload);
       unawaited(_pushOverlayEvent('agent_status', payload));
     }
+
     lastPayload.value = const JsonEncoder.withIndent('  ').convert(payload);
     unawaited(
       _sendOverlayMessage(<String, dynamic>{
@@ -604,6 +687,32 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         'payload': lastPayload.value,
       }),
     );
+  }
+
+  void _handleConnectivityResult(
+    ConnectivityProbeResult payload,
+    int pendingIndex,
+  ) {
+    connectivityLastOk.value = payload.ok;
+    connectivityLatencyMs.value = payload.latencyMs;
+
+    if (payload.ok && payload.reply.trim().isNotEmpty) {
+      connectivityMessages.add(
+        ProbeConversationMessage(role: 'assistant', content: payload.reply),
+      );
+      connectivityNotice.value = '模型回复成功，可继续对话。';
+      _appendLog(
+        'info',
+        '模型连通性测试成功${payload.latencyMs == null ? '' : '，耗时 ${payload.latencyMs}ms'}。',
+      );
+    } else {
+      _markConnectivityMessageFailed(pendingIndex);
+      connectivityNotice.value = payload.message;
+      connectivityLastOk.value = false;
+      _appendLog('error', '模型连通性测试失败：${payload.message}');
+    }
+
+    _setPayload(payload.toMap());
   }
 
   void _markConnectivityMessageFailed(int index) {
@@ -672,6 +781,15 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     await FlutterOverlayWindow.shareData(jsonEncode(payload));
   }
 
+  Future<NativeToolExecutionResult> _executeTool(
+    String toolName, {
+    Map<String, dynamic> arguments = const <String, dynamic>{},
+  }) {
+    return _platformGateway.executeTool(
+      NativeToolExecutionRequest(toolName: toolName, arguments: arguments),
+    );
+  }
+
   Map<String, dynamic>? _normalizeEvent(dynamic rawEvent) {
     if (rawEvent is Map) {
       return rawEvent.map(
@@ -700,33 +818,5 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       );
     }
     return null;
-  }
-
-  Map<String, dynamic> _resolveAgentStatusPayload(
-    Map<String, dynamic> payload, {
-    String fallbackStatus = 'idle',
-  }) {
-    final nested = _normalizeMap(payload['status']);
-    final message = payload['message']?.toString();
-    if (nested != null && nested.isNotEmpty) {
-      return <String, dynamic>{
-        ...nested,
-        if (message != null && message.isNotEmpty) 'message': message,
-      };
-    }
-    return <String, dynamic>{
-      ...agentRunStatus,
-      'running': false,
-      'status': fallbackStatus,
-      if (message != null && message.isNotEmpty) 'message': message,
-      'updatedAt': DateTime.now().millisecondsSinceEpoch,
-    };
-  }
-
-  int? _readInt(dynamic value) {
-    if (value is int) {
-      return value;
-    }
-    return int.tryParse(value?.toString() ?? '');
   }
 }

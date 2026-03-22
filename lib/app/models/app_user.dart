@@ -4,11 +4,7 @@ part 'app_user.g.dart';
 
 @JsonSerializable()
 class AppUser {
-  const AppUser({
-    required this.id,
-    required this.name,
-    required this.email,
-  });
+  const AppUser({required this.id, required this.name, required this.email});
 
   final int id;
   final String name;
