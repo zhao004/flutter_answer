@@ -72,7 +72,6 @@ class _OverlayViewState extends State<OverlayView> {
   Map<String, dynamic> _agentConfig = const <String, dynamic>{};
   Map<String, dynamic> _agentRunStatus = const <String, dynamic>{};
   List<String> _logs = const <String>[];
-  String _lastPayload = '{}';
   _OverlayMode _mode = _OverlayMode.expanded;
   OverlayPosition _overlayPosition = const OverlayPosition(12, 120);
 
@@ -255,7 +254,6 @@ class _OverlayViewState extends State<OverlayView> {
       agentRunStatus: _agentRunStatus,
     );
     final logHeight = math.max(120.0, math.min(220.0, panelHeight * 0.34));
-    final payloadHeight = panelHeight < 420 ? 58.0 : 74.0;
 
     return SizedBox(
       key: const ValueKey<String>('expanded'),
@@ -467,30 +465,6 @@ class _OverlayViewState extends State<OverlayView> {
                             );
                           },
                         ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '最近载荷',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: const Color(0xFF153837),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: payloadHeight,
-                child: _SectionCard(
-                  child: SingleChildScrollView(
-                    child: SelectableText(
-                      _lastPayload,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: const Color(0xFF284644),
-                        fontFamily: 'monospace',
-                        height: 1.3,
-                      ),
-                    ),
-                  ),
                 ),
               ),
             ],
@@ -769,7 +743,6 @@ class _OverlayViewState extends State<OverlayView> {
           _serviceStatus = _mapValue(event['serviceStatus']);
           _agentConfig = _mapValue(event['agentConfig']);
           _agentRunStatus = _mapValue(event['agentRunStatus']);
-          _lastPayload = event['lastPayload']?.toString() ?? _lastPayload;
           final snapshotLogs = _stringList(event['logs']);
           if (snapshotLogs.isNotEmpty) {
             _logs = snapshotLogs;
@@ -787,9 +760,6 @@ class _OverlayViewState extends State<OverlayView> {
           break;
         case 'overlay_state':
           _applyOverlayState(_mapValue(event['payload']));
-          break;
-        case 'payload':
-          _lastPayload = event['payload']?.toString() ?? _lastPayload;
           break;
         case 'log':
           _appendOverlayLog(event['line']?.toString() ?? '');
