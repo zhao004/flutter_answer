@@ -8,7 +8,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(
     GetMaterialApp(
-      title: "Application",
+      title: "AI自动答题",
       initialRoute: AppPages.initial,
       getPages: AppPages.routes,
     ),

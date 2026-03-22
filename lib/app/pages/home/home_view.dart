@@ -10,7 +10,7 @@ class HomeView extends GetView<HomeController> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('代理控制台')),
+      appBar: AppBar(title: const Text('AI自动答题')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -97,7 +97,6 @@ class _AgentHintCard extends StatelessWidget {
     );
   }
 }
-
 
 class _AccessCard extends StatelessWidget {
   const _AccessCard({required this.controller});
