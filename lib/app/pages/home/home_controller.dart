@@ -40,10 +40,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final providerUrlController = TextEditingController();
   final apiKeyController = TextEditingController();
   final modelController = TextEditingController(text: 'gpt-5-mini');
-  final taskPromptController = TextEditingController(
-    text:
-        'Read the current question page, answer carefully, prefer tools, and stop at the submit page unless auto submit is enabled.',
-  );
   final maxIterationsController = TextEditingController(
     text: AgentConfig.defaultMaxIterations.toString(),
   );
@@ -103,7 +99,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     providerUrlController.dispose();
     apiKeyController.dispose();
     modelController.dispose();
-    taskPromptController.dispose();
     maxIterationsController.dispose();
     maxExecutionMinutesController.dispose();
     maxRepeatedSameToolCallController.dispose();
@@ -146,7 +141,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       return;
     }
 
-    _currentConfig = savedConfig;
+    _currentConfig = savedConfig
+        .copyWith(taskPrompt: const AgentConfig().taskPrompt)
+        .sanitized();
     _syncAgentConfig(_currentConfig.toPublicMap());
     apiKeyController.text = _currentConfig.apiKey;
   }
@@ -246,9 +243,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       model: modelController.text.trim().isEmpty
           ? 'gpt-5-mini'
           : modelController.text.trim(),
-      taskPrompt: taskPromptController.text.trim().isEmpty
-          ? const AgentConfig().taskPrompt
-          : taskPromptController.text.trim(),
+      taskPrompt: const AgentConfig().taskPrompt,
       autoSubmit: autoSubmit.value,
       maxIterations: _readConfigInt(
         controller: maxIterationsController,
@@ -758,8 +753,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     agentConfig.assignAll(payload);
     providerUrlController.text = payload['providerUrl']?.toString() ?? '';
     modelController.text = payload['model']?.toString() ?? modelController.text;
-    taskPromptController.text =
-        payload['taskPrompt']?.toString() ?? taskPromptController.text;
     apiKeyController.text = _currentConfig.apiKey;
     autoSubmit.value = payload['autoSubmit'] == true;
     maxIterationsController.text =

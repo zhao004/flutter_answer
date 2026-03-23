@@ -229,13 +229,9 @@ class _AgentConfigCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: controller.taskPromptController,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  labelText: '任务提示词',
-                ),
+              Text(
+                '任务提示词已内置为系统默认策略，无需手动填写。',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
               Text(
