@@ -276,7 +276,6 @@ class _OverlayViewState extends State<OverlayView> {
       agentConfig: _agentConfig,
       agentRunStatus: _agentRunStatus,
     );
-    final logHeight = math.max(120.0, math.min(220.0, panelHeight * 0.34));
 
     return SizedBox(
       key: const ValueKey<String>('expanded'),
@@ -382,6 +381,10 @@ class _OverlayViewState extends State<OverlayView> {
                               color: const Color(0xFF4D6664),
                             ),
                           ),
+                          if (_logs.isNotEmpty) ...[
+                            const SizedBox(height: 10),
+                            _buildInlineLogs(theme, panelHeight),
+                          ],
                         ],
                       ),
                     ),
@@ -443,48 +446,41 @@ class _OverlayViewState extends State<OverlayView> {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              Text(
-                '运行日志',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: const Color(0xFF153837),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: logHeight,
-                child: _SectionCard(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                  child: _logs.isEmpty
-                      ? Center(
-                          child: Text(
-                            '暂无日志输出。',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: const Color(0xFF6A7B79),
-                            ),
-                          ),
-                        )
-                      : ListView.separated(
-                          itemCount: _logs.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(height: 6),
-                          itemBuilder: (context, index) {
-                            final line = _logs[index];
-                            return Text(
-                              line,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: const Color(0xFF284644),
-                                fontFamily: 'monospace',
-                                height: 1.35,
-                              ),
-                            );
-                          },
-                        ),
-                ),
-              ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInlineLogs(ThemeData theme, double panelHeight) {
+    final logHeight = math.max(72.0, math.min(132.0, panelHeight * 0.2));
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0x66FFFFFF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0x1F153837)),
+      ),
+      child: SizedBox(
+        height: logHeight,
+        child: ListView.separated(
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          primary: false,
+          itemCount: _logs.length,
+          separatorBuilder: (context, index) => const SizedBox(height: 4),
+          itemBuilder: (context, index) {
+            final line = _logs[index];
+            return Text(
+              line,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF284644),
+                fontFamily: 'monospace',
+                height: 1.3,
+              ),
+            );
+          },
         ),
       ),
     );
@@ -550,9 +546,7 @@ class _OverlayViewState extends State<OverlayView> {
           width: 38,
           height: 38,
           decoration: BoxDecoration(
-            color: active
-                ? const Color(0xFF0C655F)
-                : const Color(0x1A0C655F),
+            color: active ? const Color(0xFF0C655F) : const Color(0x1A0C655F),
             shape: BoxShape.circle,
           ),
           alignment: Alignment.center,
@@ -692,12 +686,13 @@ class _OverlayViewState extends State<OverlayView> {
     );
   }
 
-  OverlayPosition _resolveCollapsedNativeReleaseTarget(OverlayPosition position) {
+  OverlayPosition _resolveCollapsedNativeReleaseTarget(
+    OverlayPosition position,
+  ) {
     final dimensions = _dimensionsFor(_OverlayMode.collapsed);
     final clamped = _clampPosition(position, dimensions);
     final screen = _logicalScreenSize();
-    final targetX =
-        clamped.x + (dimensions.width / 2) < (screen.width / 2)
+    final targetX = clamped.x + (dimensions.width / 2) < (screen.width / 2)
         ? _edgeMargin
         : screen.width - dimensions.width - _edgeMargin;
     return _clampPosition(OverlayPosition(targetX, clamped.y), dimensions);
@@ -1183,9 +1178,10 @@ class _OverlayViewState extends State<OverlayView> {
     final formattedLine = _hasTimePrefix(normalizedLine)
         ? normalizedLine
         : '[${_formatLogTime(DateTime.now())}][调试] $normalizedLine';
-    _logs = <String>[formattedLine, ..._logs]
-        .take(_maxLogLines)
-        .toList(growable: false);
+    _logs = <String>[
+      formattedLine,
+      ..._logs,
+    ].take(_maxLogLines).toList(growable: false);
   }
 
   Map<String, dynamic>? _normalizeEvent(dynamic rawEvent) {
