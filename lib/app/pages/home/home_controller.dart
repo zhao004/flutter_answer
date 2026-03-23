@@ -1,11 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:math' as math;
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:get/get.dart';
 
 import '../../agent/data/agent_config_store.dart';
@@ -15,21 +12,25 @@ import '../../agent/domain/models/agent_run_state.dart';
 import '../../agent/domain/models/native_platform_event.dart';
 import '../../agent/domain/models/native_tool_execution.dart';
 import '../../agent/domain/services/langchain_agent_runtime_service.dart';
-import '../../services/overlay_message_bridge.dart';
+import '../../models/overlay_window_position.dart';
+import '../../services/agent_diagnostic_hint.dart';
+import '../../services/overlay_platform_gateway.dart';
 
 class HomeController extends GetxController with WidgetsBindingObserver {
   HomeController({
     required AgentPlatformGateway platformGateway,
+    required OverlayPlatformGateway overlayPlatformGateway,
     required AgentConfigStore configStore,
     required LangChainAgentRuntimeService runtimeService,
   }) : _platformGateway = platformGateway,
+       _overlayPlatformGateway = overlayPlatformGateway,
        _configStore = configStore,
        _runtimeService = runtimeService;
 
   final AgentPlatformGateway _platformGateway;
+  final OverlayPlatformGateway _overlayPlatformGateway;
   final AgentConfigStore _configStore;
   final LangChainAgentRuntimeService _runtimeService;
-  final ReceivePort _mainReceivePort = ReceivePort();
 
   final serviceStatus = <String, dynamic>{}.obs;
   final agentConfig = <String, dynamic>{}.obs;
@@ -58,14 +59,16 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final isBusy = false.obs;
 
   StreamSubscription<NativePlatformEvent>? _eventSubscription;
-  StreamSubscription<dynamic>? _overlaySubscription;
-  StreamSubscription<dynamic>? _overlayPortSubscription;
+  StreamSubscription<Map<String, dynamic>>? _overlaySubscription;
 
   AgentConfig _currentConfig = const AgentConfig();
   AgentRunState _currentRunState = AgentRunState.idle();
   bool _systemSettingsFlowActive = false;
   String _overlayWindowMode = 'expanded';
-  OverlayPosition _overlayWindowPosition = const OverlayPosition(12, 120);
+  OverlayWindowPosition _overlayWindowPosition = const OverlayWindowPosition(
+    12,
+    120,
+  );
   String? _lastLogLine;
   int? _lastLogAtMs;
 
@@ -75,9 +78,8 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   void onInit() {
     super.onInit();
     WidgetsBinding.instance.addObserver(this);
-    _registerMainPort();
     _eventSubscription = _platformGateway.events().listen(_handleNativeEvent);
-    _overlaySubscription = FlutterOverlayWindow.overlayListener.listen(
+    _overlaySubscription = _overlayPlatformGateway.events().listen(
       _handleOverlayEvent,
     );
     _applyRunState(_currentRunState, updatePayload: false);
@@ -90,9 +92,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     _runtimeService.requestStop();
     _eventSubscription?.cancel();
     _overlaySubscription?.cancel();
-    _overlayPortSubscription?.cancel();
-    _mainReceivePort.close();
-    IsolateNameServer.removePortNameMapping(OverlayMessageBridge.mainPortName);
     providerUrlController.dispose();
     apiKeyController.dispose();
     modelController.dispose();
@@ -120,15 +119,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     await refreshServiceStatus();
     await refreshAgentRunStatus();
     await syncOverlayState();
-  }
-
-  void _registerMainPort() {
-    IsolateNameServer.removePortNameMapping(OverlayMessageBridge.mainPortName);
-    IsolateNameServer.registerPortWithName(
-      _mainReceivePort.sendPort,
-      OverlayMessageBridge.mainPortName,
-    );
-    _overlayPortSubscription = _mainReceivePort.listen(_handleOverlayEvent);
   }
 
   Future<void> _restoreSavedConfig() async {
@@ -355,15 +345,14 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> syncOverlayState() async {
-    final granted = await FlutterOverlayWindow.isPermissionGranted() == true;
-    final active = await FlutterOverlayWindow.isActive() == true;
+    final granted = await _overlayPlatformGateway.isPermissionGranted();
+    final active = await _overlayPlatformGateway.isActive();
     overlayPermissionGranted.value = granted;
     overlayActive.value = active;
     if (active) {
-      final position = await _safeGetOverlayPosition();
-      if (position != null) {
-        _overlayWindowPosition = position;
-      }
+      _applyOverlayStatePayload(
+        await _overlayPlatformGateway.getOverlayState(),
+      );
     }
     await _broadcastOverlaySnapshot();
   }
@@ -377,9 +366,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     await _dismissOverlayForSystemSettings();
     _appendLog('info', '正在打开系统悬浮窗权限页面。');
     try {
-      final granted = await FlutterOverlayWindow.requestPermission();
-      overlayPermissionGranted.value = granted == true;
-      if (granted == true) {
+      final granted = await _overlayPlatformGateway.requestPermission();
+      overlayPermissionGranted.value = granted;
+      if (granted) {
         _appendLog('info', '已获得悬浮窗权限。');
       } else {
         _appendLog('warn', '悬浮窗权限尚未开启，请在系统页面中完成授权。');
@@ -422,7 +411,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
 
   Future<void> closeOverlay() async {
     try {
-      await FlutterOverlayWindow.closeOverlay();
+      await _overlayPlatformGateway.closeOverlay();
       overlayActive.value = false;
       await _broadcastOverlaySnapshot();
     } catch (error) {
@@ -504,6 +493,14 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       return;
     }
 
+    if (event['type'] == 'overlay_state') {
+      final payload = _normalizeMap(event['payload']);
+      if (payload != null) {
+        _applyOverlayStatePayload(payload);
+      }
+      return;
+    }
+
     if (event['source'] != 'overlay' || event['type'] != 'command') {
       return;
     }
@@ -534,7 +531,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         final x = _readDouble(event['x']);
         final y = _readDouble(event['y']);
         if (x != null && y != null) {
-          unawaited(_moveOverlayWindow(OverlayPosition(x, y)));
+          unawaited(_moveOverlayWindow(OverlayWindowPosition(x, y)));
         }
         break;
       case 'close_overlay':
@@ -568,26 +565,10 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> _showOverlayWindow() async {
-    final geometry = _overlayGeometryForMode(_overlayWindowMode);
-    final enableDrag = _overlayDragEnabledForMode(_overlayWindowMode);
-    final active = await FlutterOverlayWindow.isActive();
-
-    if (!active) {
-      await FlutterOverlayWindow.showOverlay(
-        enableDrag: enableDrag,
-        flag: OverlayFlag.focusPointer,
-        alignment: OverlayAlignment.topLeft,
-        height: geometry.height,
-        width: geometry.width,
-        positionGravity: PositionGravity.none,
-        startPosition: _overlayWindowPosition,
-        overlayTitle: '答题代理悬浮窗',
-        overlayContent: '代理控制面板',
-        visibility: NotificationVisibility.visibilityPublic,
-      );
-    } else {
-      await FlutterOverlayWindow.moveOverlay(_overlayWindowPosition);
-    }
+    await _overlayPlatformGateway.showOverlay(
+      mode: _overlayWindowMode,
+      position: _overlayWindowPosition,
+    );
 
     overlayActive.value = true;
   }
@@ -608,17 +589,22 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     await _pushOverlayState();
   }
 
-  Future<void> _moveOverlayWindow(OverlayPosition position) async {
+  Future<void> _moveOverlayWindow(OverlayWindowPosition position) async {
     final geometry = _overlayGeometryForMode(_overlayWindowMode);
     final clamped = _clampOverlayPosition(position, geometry);
-    await FlutterOverlayWindow.moveOverlay(clamped);
+    await _overlayPlatformGateway.moveOverlay(clamped);
     _overlayWindowPosition = clamped;
     await _pushOverlayState();
   }
 
-  Future<OverlayPosition?> _safeGetOverlayPosition() async {
+  Future<OverlayWindowPosition?> _safeGetOverlayPosition() async {
     try {
-      return await FlutterOverlayWindow.getOverlayPosition();
+      final overlayState = await _overlayPlatformGateway.getOverlayState();
+      if (overlayState.isEmpty) {
+        return null;
+      }
+      _applyOverlayStatePayload(overlayState);
+      return OverlayWindowPosition.tryParse(overlayState['position']);
     } catch (_) {
       return null;
     }
@@ -628,10 +614,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     final geometry = _overlayGeometryForMode(_overlayWindowMode);
     return <String, dynamic>{
       'mode': _overlayWindowMode,
-      'position': <String, double>{
-        'x': _overlayWindowPosition.x,
-        'y': _overlayWindowPosition.y,
-      },
+      'position': _overlayWindowPosition.toMap(),
       'width': geometry.width,
       'height': geometry.height,
       'active': overlayActive.value,
@@ -657,12 +640,10 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     return const _OverlayWindowGeometry(width: 380, height: 560);
   }
 
-  bool _overlayDragEnabledForMode(String mode) => mode == 'collapsed';
-
-  OverlayPosition _resolveOverlayPositionForMode({
+  OverlayWindowPosition _resolveOverlayPositionForMode({
     required String currentMode,
     required String nextMode,
-    required OverlayPosition currentPosition,
+    required OverlayWindowPosition currentPosition,
   }) {
     final currentGeometry = _overlayGeometryForMode(currentMode);
     final nextGeometry = _overlayGeometryForMode(nextMode);
@@ -677,19 +658,19 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         : screen.width - nextGeometry.width - 12.0;
 
     return _clampOverlayPosition(
-      OverlayPosition(targetX, anchorY),
+      OverlayWindowPosition(targetX, anchorY),
       nextGeometry,
     );
   }
 
-  OverlayPosition _clampOverlayPosition(
-    OverlayPosition position,
+  OverlayWindowPosition _clampOverlayPosition(
+    OverlayWindowPosition position,
     _OverlayWindowGeometry geometry,
   ) {
     final screen = _logicalScreenSize();
     final maxX = math.max(12.0, screen.width - geometry.width - 12);
     final maxY = math.max(12.0, screen.height - geometry.height - 12);
-    return OverlayPosition(
+    return OverlayWindowPosition(
       position.x.clamp(12.0, maxX).toDouble(),
       position.y.clamp(12.0, maxY).toDouble(),
     );
@@ -704,15 +685,33 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> _dismissOverlayForSystemSettings() async {
-    final active = overlayActive.value || await FlutterOverlayWindow.isActive();
+    final active =
+        overlayActive.value || await _overlayPlatformGateway.isActive();
     if (!active) {
       return;
     }
 
-    await FlutterOverlayWindow.closeOverlay();
+    await _overlayPlatformGateway.closeOverlay();
     overlayActive.value = false;
     _appendLog('info', '进入系统设置前已关闭悬浮窗，避免遮挡权限页面。');
     await _broadcastOverlaySnapshot();
+  }
+
+  void _applyOverlayStatePayload(Map<String, dynamic> payload) {
+    final mode = payload['mode']?.toString();
+    if (mode != null) {
+      _overlayWindowMode = _normalizeOverlayMode(mode);
+    }
+
+    final position = OverlayWindowPosition.tryParse(payload['position']);
+    if (position != null) {
+      _overlayWindowPosition = position;
+    }
+
+    final active = payload['active'];
+    if (active is bool) {
+      overlayActive.value = active;
+    }
   }
 
   Future<void> _launchSystemSettingsFlow(Future<void> Function() action) async {
@@ -855,32 +854,64 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       'serviceStatus': Map<String, dynamic>.from(serviceStatus),
       'agentConfig': Map<String, dynamic>.from(agentConfig),
       'agentRunStatus': Map<String, dynamic>.from(agentRunStatus),
+      'diagnosticHint': _currentOverlayDiagnosticHintPayload(),
       'overlayState': _overlayStatePayload(),
       'lastPayload': lastPayload.value,
       'logs': logs.take(20).toList(),
     });
   }
 
-  Future<void> _pushOverlayEvent(String type, Map<String, dynamic> payload) {
-    return _sendOverlayMessage(<String, dynamic>{
+  Future<void> _pushOverlayEvent(
+    String type,
+    Map<String, dynamic> payload,
+  ) async {
+    await _sendOverlayMessage(<String, dynamic>{
       'source': 'main',
       'type': type,
       'payload': payload,
     });
+
+    if (type == 'service_status' ||
+        type == 'agent_config' ||
+        type == 'agent_status') {
+      await _sendOverlayMessage(<String, dynamic>{
+        'source': 'main',
+        'type': 'diagnostic_hint',
+        'payload': _currentOverlayDiagnosticHintPayload(),
+      });
+    }
+  }
+
+  Map<String, dynamic>? _currentOverlayDiagnosticHintPayload() {
+    final hint = resolveAgentDiagnosticHint(
+      serviceStatus: Map<String, dynamic>.from(serviceStatus),
+      agentConfig: Map<String, dynamic>.from(agentConfig),
+      agentRunStatus: Map<String, dynamic>.from(agentRunStatus),
+    );
+    if (hint == null) {
+      return null;
+    }
+    return <String, dynamic>{
+      'severity': _diagnosticSeverityValue(hint.severity),
+      'title': hint.title,
+      'summary': hint.summary,
+      'actions': hint.actions,
+    };
+  }
+
+  String _diagnosticSeverityValue(AgentDiagnosticSeverity severity) {
+    switch (severity) {
+      case AgentDiagnosticSeverity.info:
+        return 'info';
+      case AgentDiagnosticSeverity.warning:
+        return 'warning';
+      case AgentDiagnosticSeverity.error:
+        return 'error';
+    }
   }
 
   Future<void> _sendOverlayMessage(Map<String, dynamic> payload) async {
-    final overlayPort = IsolateNameServer.lookupPortByName(
-      OverlayMessageBridge.overlayPortName,
-    );
-    if (overlayPort != null) {
-      overlayPort.send(jsonEncode(payload));
-      return;
-    }
-    if (!overlayActive.value) {
-      return;
-    }
-    await FlutterOverlayWindow.shareData(jsonEncode(payload));
+    await _overlayPlatformGateway.sendMessage(payload);
   }
 
   Future<NativeToolExecutionResult> _executeTool(
