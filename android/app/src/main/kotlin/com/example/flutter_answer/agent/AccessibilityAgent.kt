@@ -230,15 +230,29 @@ object AccessibilityAgent {
         if (!node.isEnabled) {
             return reportFailure("clickElement", "节点 $elementId 当前不可用。", "element_disabled")
         }
-        if (!canClick(node)) {
+        val semanticKind = resolveSemanticActionKind(elementId, node)
+        val canPerformTap = canClick(node) || semanticKind != null
+        if (!canPerformTap) {
             return reportFailure("clickElement", "节点 $elementId 不可点击。", "click_failed")
         }
 
         val service = ExamAccessibilityService.instance
         val beforeFingerprint = captureUiFingerprint(service?.currentRoot())
         val riskLevel = resolveActionRisk(node)
-        if (!click(node)) {
-            return reportFailure("clickElement", "节点 $elementId 执行点击失败。", "click_failed")
+        val semanticTapUsed = if (click(node)) {
+            false
+        } else {
+            val fallbackTapped = semanticKind?.let { kind ->
+                performSemanticActionTap(node = node, kind = kind)
+            } == true
+            if (!fallbackTapped) {
+                return reportFailure("clickElement", "节点 $elementId 执行点击失败。", "click_failed")
+            }
+            true
+        }
+
+        if (semanticTapUsed) {
+            AgentEventBus.log("info", "节点 $elementId 常规点击不可用，已使用语义手势兜底。")
         }
 
         transitionTo(AutomationFlowState.RESULT_VERIFYING, "点击动作已发送，开始回读校验。")
@@ -252,6 +266,8 @@ object AccessibilityAgent {
                 extra = mapOf(
                     "elementId" to elementId,
                     "riskLevel" to riskLevel,
+                    "semanticActionKind" to semanticKind,
+                    "semanticTapFallbackUsed" to semanticTapUsed,
                     "postCheckChanged" to changed,
                     "postCheckWaitedMs" to progress.waitedMs,
                 ),
@@ -270,7 +286,12 @@ object AccessibilityAgent {
             confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
-            payload = mapOf("riskLevel" to riskLevel, "postCheckChanged" to changed),
+            payload = mapOf(
+                "riskLevel" to riskLevel,
+                "semanticActionKind" to semanticKind,
+                "semanticTapFallbackUsed" to semanticTapUsed,
+                "postCheckChanged" to changed,
+            ),
         )
         if (!ok) {
             transitionTo(AutomationFlowState.ERROR_RECOVERING, "点击动作回读失败。")
@@ -305,11 +326,23 @@ object AccessibilityAgent {
 
         transitionTo(AutomationFlowState.RESULT_VERIFYING, "输入动作已发送，开始回读校验。")
         val progress = observeUiProgress(beforeFingerprint)
-        val refreshedText = findNodeById(elementId)?.let(::extractNodeText).orEmpty()
+        val refreshedNode = findNodeById(elementId)
+        val refreshedText = extractNodeText(refreshedNode)
+        val refreshedRawText = extractRawNodeText(refreshedNode)
         val postCheckMatched = writeResult.matched || isInputTextMatched(refreshedText, text)
         val changed = progress.changed
+        val weakSignals = inferWeakInputSignals(
+            rawReadText = refreshedRawText,
+            changed = changed,
+        )
+        val weakConfirmed = !postCheckMatched && writeResult.writeSent && weakSignals.isNotEmpty()
+        val verificationLevel = when {
+            postCheckMatched -> "strong"
+            weakConfirmed -> "weak"
+            else -> "none"
+        }
 
-        val result = if (postCheckMatched) {
+        val result = if (postCheckMatched || weakConfirmed) {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "输入动作回读通过。")
             success(
                 message = "已向节点 $elementId 输入内容。",
@@ -318,13 +351,20 @@ object AccessibilityAgent {
                     "text" to text,
                     "attempts" to writeResult.attempts,
                     "lastReadText" to writeResult.lastReadText,
+                    "lastRawReadText" to refreshedRawText,
                     "postCheckMatched" to postCheckMatched,
                     "postCheckChanged" to changed,
                     "postCheckWaitedMs" to progress.waitedMs,
+                    "verificationLevel" to verificationLevel,
+                    "weakSignals" to weakSignals,
                 ),
             )
         } else {
             failure("节点 $elementId 输入后未读取到目标文本。", "set_text_failed")
+        }
+
+        if (weakConfirmed) {
+            AgentEventBus.log("warn", "节点 $elementId 输入采用弱确认通过：$weakSignals")
         }
 
         val ok = result["ok"] as Boolean
@@ -337,7 +377,12 @@ object AccessibilityAgent {
             confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
-            payload = mapOf("postCheckMatched" to postCheckMatched, "postCheckChanged" to changed),
+            payload = mapOf(
+                "postCheckMatched" to postCheckMatched,
+                "postCheckChanged" to changed,
+                "verificationLevel" to verificationLevel,
+                "weakSignals" to weakSignals,
+            ),
         )
         if (!ok) {
             transitionTo(AutomationFlowState.ERROR_RECOVERING, "输入动作回读失败。")
@@ -699,7 +744,9 @@ object AccessibilityAgent {
             packageName = context.screenPackage,
         )
         context.actions.forEach { action ->
-            val locator = locatorCache[action.id] ?: return@forEach
+            val locator = locatorCache[action.id]
+                ?: resolveFallbackActionLocator(action)
+                ?: return@forEach
             val key = buildActionLocatorKey(actionCacheScope, action.kind)
             actionLocatorCache[key] = locator
         }
@@ -738,12 +785,57 @@ object AccessibilityAgent {
 
     private fun inferActionKind(locator: NodeLocator): String {
         val text = (locator.text ?: locator.desc).orEmpty()
+        return inferActionKindFromText(text)
+    }
+
+    private fun inferActionKindFromText(text: String): String {
         return when {
             text.contains("提交") || text.contains("交卷") -> "submit"
             text.contains("下一") || text.contains("继续") -> "next"
             text.contains("确认") || text.contains("确定") -> "confirm"
             text.contains("取消") || text.contains("返回") -> "cancel"
             else -> ""
+        }
+    }
+
+    private fun resolveFallbackActionLocator(action: QuestionAction): NodeLocator? {
+        val rootBottom = rootBounds()?.bottom ?: 0
+        val expectedKind = action.kind.lowercase()
+        val actionText = action.text.trim()
+        val candidates = locatorCache.values
+            .filter { locator ->
+                val text = (locator.text ?: locator.desc).orEmpty().trim()
+                text.isNotBlank()
+            }
+        if (candidates.isEmpty()) {
+            return null
+        }
+        return candidates.maxByOrNull { locator ->
+            val text = (locator.text ?: locator.desc).orEmpty().trim()
+            val inferredKind = inferActionKindFromText(text)
+            val top = locator.bounds.getOrNull(1) ?: Int.MAX_VALUE
+            val bottom = locator.bounds.getOrNull(3) ?: Int.MIN_VALUE
+            var score = 0
+            if (inferredKind == expectedKind) {
+                score += 36
+            }
+            if (actionText.isNotBlank()) {
+                if (text == actionText) {
+                    score += 28
+                } else if (text.contains(actionText) || actionText.contains(text)) {
+                    score += 14
+                }
+            }
+            if (expectedKind in setOf("next", "submit") &&
+                rootBottom > 0 &&
+                top >= (rootBottom * 0.55).toInt()
+            ) {
+                score += 14
+            }
+            if (bottom <= top) {
+                score -= 8
+            }
+            score
         }
     }
 
@@ -1228,6 +1320,44 @@ object AccessibilityAgent {
         return texts.joinToString(" ").trim()
     }
 
+    private fun extractRawNodeText(node: AccessibilityNodeInfo?): String {
+        if (node == null) {
+            return ""
+        }
+        val texts = LinkedHashSet<String>()
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth <= 2) {
+            val nodeText = current.text?.toString()?.replace("\\s+".toRegex(), " ")?.trim().orEmpty()
+            if (nodeText.isNotBlank()) {
+                texts += nodeText
+            }
+            val nodeDesc = current.contentDescription?.toString()?.replace("\\s+".toRegex(), " ")?.trim().orEmpty()
+            if (nodeDesc.isNotBlank()) {
+                texts += nodeDesc
+            }
+            current = current.parent
+            depth += 1
+        }
+        return texts.joinToString(" ").trim()
+    }
+
+    private fun inferWeakInputSignals(rawReadText: String, changed: Boolean): List<String> {
+        val signals = linkedSetOf<String>()
+        val normalizedRaw = rawReadText.replace("\\s+".toRegex(), " ").trim()
+        val normalized = normalizeInputText(rawReadText)
+        if (changed) {
+            signals += "ui_changed"
+        }
+        if (normalizedRaw.contains("已作答") || normalizedRaw.contains("已填写")) {
+            signals += "answered_prefix"
+        }
+        if (normalized.isNotBlank() && !looksLikeInputPlaceholder(normalized)) {
+            signals += "non_placeholder_text"
+        }
+        return signals.toList()
+    }
+
     private fun looksLikeInputPlaceholder(text: String): Boolean {
         if (text.isBlank()) {
             return true
@@ -1456,6 +1586,48 @@ object AccessibilityAgent {
         } else {
             "low"
         }
+    }
+
+    private fun resolveSemanticActionKind(elementId: String, node: AccessibilityNodeInfo): String? {
+        val fromId = elementId
+            .takeIf { it.startsWith("action:") }
+            ?.removePrefix("action:")
+            ?.trim()
+            ?.lowercase()
+        if (!fromId.isNullOrBlank()) {
+            return fromId
+        }
+        val inferred = inferActionKindFromText(
+            buildString {
+                append(node.text?.toString().orEmpty())
+                append(" ")
+                append(node.contentDescription?.toString().orEmpty())
+            },
+        )
+        return inferred.ifBlank { null }
+    }
+
+    private fun performSemanticActionTap(node: AccessibilityNodeInfo, kind: String): Boolean {
+        if (kind !in setOf("next", "submit", "confirm", "cancel")) {
+            return false
+        }
+        val rect = Rect().also(node::getBoundsInScreen)
+        val rootRect = rootBounds() ?: return false
+        val centerX = rect.exactCenterX().takeUnless { it.isNaN() } ?: ((rect.left + rect.right) / 2f)
+        val primaryY = if (rect.height() >= minGestureTapSizePx) {
+            rect.exactCenterY()
+        } else {
+            (rect.top - 56).toFloat()
+        }
+        if (performGestureTapAt(centerX, primaryY)) {
+            return true
+        }
+        if (kind !in setOf("next", "submit")) {
+            return false
+        }
+        // 底部按钮节点在 WebView 中偶发退化为零高度，二次尝试点击底部安全带，提升可推进性。
+        val fallbackY = (rootRect.bottom - 96).toFloat()
+        return performGestureTapAt(centerX, fallbackY)
     }
 
     private fun transitionTo(target: AutomationFlowState, reason: String) {

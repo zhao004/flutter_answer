@@ -86,6 +86,15 @@ class QuestionExtractorChaoxingCoverageTest {
         assertFalse(context.actions.any { action -> action.id == "footerSubmitText" && action.kind == "submit" })
     }
 
+    @Test
+    fun `extract provides semantic next action when footer next node is zero height`() {
+        val context = QuestionExtractor.extract(zeroHeightNextSnapshot())
+
+        val nextAction = context.actions.firstOrNull { action -> action.kind == "next" }
+        assertTrue(nextAction != null)
+        assertEquals("action:next", nextAction?.id)
+    }
+
     private fun multiSelectSnapshot(): UiSnapshot {
         return chaoxingSnapshot(
             listOf(
@@ -603,6 +612,51 @@ class QuestionExtractorChaoxingCoverageTest {
                     text = "提交",
                     className = "android.widget.TextView",
                     bounds = listOf(720, 1416, 1241, 1592),
+                ),
+            ),
+        )
+    }
+
+    private fun zeroHeightNextSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "questionType",
+                    text = "1. 填空题",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 280, 1387, 512),
+                ),
+                element(
+                    id = "questionLabel",
+                    text = "题干",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 508, 1387, 745),
+                ),
+                element(
+                    id = "questionText",
+                    text = "flutter由哪个企业推出？",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 538, 980, 617),
+                ),
+                element(
+                    id = "blankLabel",
+                    text = "第1空",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 741, 220, 906),
+                ),
+                element(
+                    id = "blankInput",
+                    text = "请输入答案",
+                    className = "android.widget.EditText",
+                    viewId = "ueditor_0",
+                    editable = true,
+                    bounds = listOf(75, 925, 1368, 1078),
+                ),
+                element(
+                    id = "nextQuestion",
+                    text = "下一题",
+                    className = "android.view.View",
+                    bounds = listOf(918, 3032, 1327, 3032),
                 ),
             ),
         )

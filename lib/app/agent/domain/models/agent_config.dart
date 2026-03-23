@@ -6,15 +6,53 @@ class AgentConfig {
     this.taskPrompt =
         'Read the current question page, answer carefully, prefer tools, and stop at the submit page unless auto submit is enabled.',
     this.autoSubmit = false,
+    this.maxIterations = defaultMaxIterations,
+    this.maxExecutionMinutes = defaultMaxExecutionMinutes,
+    this.maxRepeatedSameToolCall = defaultMaxRepeatedSameToolCall,
+    this.maxNoProgressActionStreak = defaultMaxNoProgressActionStreak,
   });
+
+  static const int defaultMaxIterations = 720;
+  static const int minMaxIterations = 80;
+  static const int maxMaxIterations = 2000;
+  static const int defaultMaxExecutionMinutes = 15;
+  static const int minMaxExecutionMinutes = 2;
+  static const int maxMaxExecutionMinutes = 60;
+  static const int defaultMaxRepeatedSameToolCall = 12;
+  static const int minMaxRepeatedSameToolCall = 4;
+  static const int maxMaxRepeatedSameToolCall = 40;
+  static const int defaultMaxNoProgressActionStreak = 32;
+  static const int minMaxNoProgressActionStreak = 8;
+  static const int maxMaxNoProgressActionStreak = 120;
 
   final String providerUrl;
   final String apiKey;
   final String model;
   final String taskPrompt;
   final bool autoSubmit;
+  final int maxIterations;
+  final int maxExecutionMinutes;
+  final int maxRepeatedSameToolCall;
+  final int maxNoProgressActionStreak;
 
   bool get hasApiKey => apiKey.trim().isNotEmpty;
+  int get sanitizedMaxIterations =>
+      _clampInt(maxIterations, minMaxIterations, maxMaxIterations);
+  int get sanitizedMaxExecutionMinutes => _clampInt(
+    maxExecutionMinutes,
+    minMaxExecutionMinutes,
+    maxMaxExecutionMinutes,
+  );
+  int get sanitizedMaxRepeatedSameToolCall => _clampInt(
+    maxRepeatedSameToolCall,
+    minMaxRepeatedSameToolCall,
+    maxMaxRepeatedSameToolCall,
+  );
+  int get sanitizedMaxNoProgressActionStreak => _clampInt(
+    maxNoProgressActionStreak,
+    minMaxNoProgressActionStreak,
+    maxMaxNoProgressActionStreak,
+  );
 
   AgentConfig copyWith({
     String? providerUrl,
@@ -22,6 +60,10 @@ class AgentConfig {
     String? model,
     String? taskPrompt,
     bool? autoSubmit,
+    int? maxIterations,
+    int? maxExecutionMinutes,
+    int? maxRepeatedSameToolCall,
+    int? maxNoProgressActionStreak,
   }) {
     return AgentConfig(
       providerUrl: providerUrl ?? this.providerUrl,
@@ -29,26 +71,51 @@ class AgentConfig {
       model: model ?? this.model,
       taskPrompt: taskPrompt ?? this.taskPrompt,
       autoSubmit: autoSubmit ?? this.autoSubmit,
+      maxIterations: maxIterations ?? this.maxIterations,
+      maxExecutionMinutes: maxExecutionMinutes ?? this.maxExecutionMinutes,
+      maxRepeatedSameToolCall:
+          maxRepeatedSameToolCall ?? this.maxRepeatedSameToolCall,
+      maxNoProgressActionStreak:
+          maxNoProgressActionStreak ?? this.maxNoProgressActionStreak,
+    );
+  }
+
+  AgentConfig sanitized() {
+    return copyWith(
+      maxIterations: sanitizedMaxIterations,
+      maxExecutionMinutes: sanitizedMaxExecutionMinutes,
+      maxRepeatedSameToolCall: sanitizedMaxRepeatedSameToolCall,
+      maxNoProgressActionStreak: sanitizedMaxNoProgressActionStreak,
     );
   }
 
   Map<String, dynamic> toPublicMap() {
+    final sanitizedConfig = sanitized();
     return <String, dynamic>{
-      'providerUrl': providerUrl,
+      'providerUrl': sanitizedConfig.providerUrl,
       'hasApiKey': hasApiKey,
-      'model': model,
-      'taskPrompt': taskPrompt,
-      'autoSubmit': autoSubmit,
+      'model': sanitizedConfig.model,
+      'taskPrompt': sanitizedConfig.taskPrompt,
+      'autoSubmit': sanitizedConfig.autoSubmit,
+      'maxIterations': sanitizedConfig.maxIterations,
+      'maxExecutionMinutes': sanitizedConfig.maxExecutionMinutes,
+      'maxRepeatedSameToolCall': sanitizedConfig.maxRepeatedSameToolCall,
+      'maxNoProgressActionStreak': sanitizedConfig.maxNoProgressActionStreak,
     };
   }
 
   Map<String, dynamic> toPersistedMap() {
+    final sanitizedConfig = sanitized();
     return <String, dynamic>{
-      'providerUrl': providerUrl,
-      'apiKey': apiKey,
-      'model': model,
-      'taskPrompt': taskPrompt,
-      'autoSubmit': autoSubmit,
+      'providerUrl': sanitizedConfig.providerUrl,
+      'apiKey': sanitizedConfig.apiKey,
+      'model': sanitizedConfig.model,
+      'taskPrompt': sanitizedConfig.taskPrompt,
+      'autoSubmit': sanitizedConfig.autoSubmit,
+      'maxIterations': sanitizedConfig.maxIterations,
+      'maxExecutionMinutes': sanitizedConfig.maxExecutionMinutes,
+      'maxRepeatedSameToolCall': sanitizedConfig.maxRepeatedSameToolCall,
+      'maxNoProgressActionStreak': sanitizedConfig.maxNoProgressActionStreak,
     };
   }
 
@@ -63,6 +130,30 @@ class AgentConfig {
           ? json['taskPrompt'].toString()
           : const AgentConfig().taskPrompt,
       autoSubmit: json['autoSubmit'] == true,
-    );
+      maxIterations: _readInt(json['maxIterations'], defaultMaxIterations),
+      maxExecutionMinutes: _readInt(
+        json['maxExecutionMinutes'],
+        defaultMaxExecutionMinutes,
+      ),
+      maxRepeatedSameToolCall: _readInt(
+        json['maxRepeatedSameToolCall'],
+        defaultMaxRepeatedSameToolCall,
+      ),
+      maxNoProgressActionStreak: _readInt(
+        json['maxNoProgressActionStreak'],
+        defaultMaxNoProgressActionStreak,
+      ),
+    ).sanitized();
+  }
+
+  static int _readInt(dynamic value, int fallback) {
+    if (value is int) {
+      return value;
+    }
+    return int.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  static int _clampInt(int value, int min, int max) {
+    return value.clamp(min, max).toInt();
   }
 }

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
+import '../../agent/domain/models/agent_config.dart';
 import '../../services/agent_diagnostic_hint.dart';
 import 'home_controller.dart';
 
@@ -236,6 +238,43 @@ class _AgentConfigCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
+              Text(
+                '长题库场景可适当提高下面的运行阈值，减少因保护上限过早停止。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              // 使用 Wrap 承载数值配置，避免窄屏设备上 4 个输入框被压缩到不可读。
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  _NumberConfigField(
+                    controller: controller.maxIterationsController,
+                    label: '最大轮数',
+                    hint: '${AgentConfig.defaultMaxIterations}',
+                    helper: '80-2000',
+                  ),
+                  _NumberConfigField(
+                    controller: controller.maxExecutionMinutesController,
+                    label: '最长运行分钟',
+                    hint: '${AgentConfig.defaultMaxExecutionMinutes}',
+                    helper: '2-60',
+                  ),
+                  _NumberConfigField(
+                    controller: controller.maxRepeatedSameToolCallController,
+                    label: '同参重复阈值',
+                    hint: '${AgentConfig.defaultMaxRepeatedSameToolCall}',
+                    helper: '4-40',
+                  ),
+                  _NumberConfigField(
+                    controller: controller.maxNoProgressActionStreakController,
+                    label: '无进展动作阈值',
+                    hint: '${AgentConfig.defaultMaxNoProgressActionStreak}',
+                    helper: '8-120',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('允许自动提交'),
@@ -260,6 +299,38 @@ class _AgentConfigCard extends StatelessWidget {
         ),
       );
     });
+  }
+}
+
+class _NumberConfigField extends StatelessWidget {
+  const _NumberConfigField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    required this.helper,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final String helper;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 172,
+      child: TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: InputDecoration(
+          border: const OutlineInputBorder(),
+          labelText: label,
+          hintText: hint,
+          helperText: helper,
+        ),
+      ),
+    );
   }
 }
 

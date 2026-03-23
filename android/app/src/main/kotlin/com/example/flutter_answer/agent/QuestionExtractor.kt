@@ -76,7 +76,13 @@ object QuestionExtractor {
                         expectedKind = kind,
                         hintText = textHint,
                         snapshot = snapshot,
-                    ) ?: element.id.takeIf { canUseHintElementAsActionTarget(element) } ?: return@mapNotNull null
+                    ) ?: element.id.takeIf { canUseHintElementAsActionTarget(element) }
+                        ?: semanticFallbackActionId(
+                            kind = kind,
+                            hintElement = element,
+                            snapshot = snapshot,
+                        )
+                        ?: return@mapNotNull null
                 }
                 QuestionAction(
                     id = targetId,
@@ -1243,6 +1249,31 @@ object QuestionExtractor {
             return false
         }
         return cleanText(element.text ?: element.desc).isNotBlank()
+    }
+
+    private fun semanticFallbackActionId(
+        kind: String,
+        hintElement: UiElement,
+        snapshot: UiSnapshot,
+    ): String? {
+        if (kind !in setOf("next", "submit", "confirm", "cancel")) {
+            return null
+        }
+        val top = hintElement.bounds.getOrNull(1) ?: return null
+        val bottom = hintElement.bounds.getOrNull(3) ?: return null
+        val screenHeight = snapshot.elements.maxOfOrNull { element ->
+            element.bounds.getOrNull(3) ?: 0
+        } ?: return null
+        if (screenHeight <= 0) {
+            return null
+        }
+        val isFooterLike = top >= (screenHeight * 0.55).toInt() || bottom >= (screenHeight * 0.6).toInt()
+        val isPopupLike = kind == "confirm" || kind == "cancel"
+        if (!isFooterLike && !isPopupLike) {
+            return null
+        }
+        // 当底部动作文本节点退化为不可点击/零高度时，输出语义动作 id，交给原生层按动作语义兜底定位。
+        return "action:$kind"
     }
 
     private data class BlankLabelAnchor(

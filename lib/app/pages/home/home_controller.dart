@@ -44,6 +44,18 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     text:
         'Read the current question page, answer carefully, prefer tools, and stop at the submit page unless auto submit is enabled.',
   );
+  final maxIterationsController = TextEditingController(
+    text: AgentConfig.defaultMaxIterations.toString(),
+  );
+  final maxExecutionMinutesController = TextEditingController(
+    text: AgentConfig.defaultMaxExecutionMinutes.toString(),
+  );
+  final maxRepeatedSameToolCallController = TextEditingController(
+    text: AgentConfig.defaultMaxRepeatedSameToolCall.toString(),
+  );
+  final maxNoProgressActionStreakController = TextEditingController(
+    text: AgentConfig.defaultMaxNoProgressActionStreak.toString(),
+  );
 
   final autoSubmit = false.obs;
   final overlayDragFrameThrottleEnabled = true.obs;
@@ -92,6 +104,10 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     apiKeyController.dispose();
     modelController.dispose();
     taskPromptController.dispose();
+    maxIterationsController.dispose();
+    maxExecutionMinutesController.dispose();
+    maxRepeatedSameToolCallController.dispose();
+    maxNoProgressActionStreakController.dispose();
     super.onClose();
   }
 
@@ -234,7 +250,23 @@ class HomeController extends GetxController with WidgetsBindingObserver {
           ? const AgentConfig().taskPrompt
           : taskPromptController.text.trim(),
       autoSubmit: autoSubmit.value,
-    );
+      maxIterations: _readConfigInt(
+        controller: maxIterationsController,
+        fallback: AgentConfig.defaultMaxIterations,
+      ),
+      maxExecutionMinutes: _readConfigInt(
+        controller: maxExecutionMinutesController,
+        fallback: AgentConfig.defaultMaxExecutionMinutes,
+      ),
+      maxRepeatedSameToolCall: _readConfigInt(
+        controller: maxRepeatedSameToolCallController,
+        fallback: AgentConfig.defaultMaxRepeatedSameToolCall,
+      ),
+      maxNoProgressActionStreak: _readConfigInt(
+        controller: maxNoProgressActionStreakController,
+        fallback: AgentConfig.defaultMaxNoProgressActionStreak,
+      ),
+    ).sanitized();
 
     await _configStore.save(_currentConfig);
     _syncAgentConfig(_currentConfig.toPublicMap());
@@ -428,10 +460,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       return;
     }
     overlayDragFrameThrottleEnabled.value = enabled;
-    _appendLog(
-      'info',
-      enabled ? '已开启悬浮窗拖动帧率节流（16ms）。' : '已关闭悬浮窗拖动帧率节流。',
-    );
+    _appendLog('info', enabled ? '已开启悬浮窗拖动帧率节流（16ms）。' : '已关闭悬浮窗拖动帧率节流。');
     await _pushOverlayState();
   }
 
@@ -733,6 +762,26 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         payload['taskPrompt']?.toString() ?? taskPromptController.text;
     apiKeyController.text = _currentConfig.apiKey;
     autoSubmit.value = payload['autoSubmit'] == true;
+    maxIterationsController.text =
+        payload['maxIterations']?.toString() ??
+        AgentConfig.defaultMaxIterations.toString();
+    maxExecutionMinutesController.text =
+        payload['maxExecutionMinutes']?.toString() ??
+        AgentConfig.defaultMaxExecutionMinutes.toString();
+    maxRepeatedSameToolCallController.text =
+        payload['maxRepeatedSameToolCall']?.toString() ??
+        AgentConfig.defaultMaxRepeatedSameToolCall.toString();
+    maxNoProgressActionStreakController.text =
+        payload['maxNoProgressActionStreak']?.toString() ??
+        AgentConfig.defaultMaxNoProgressActionStreak.toString();
+  }
+
+  int _readConfigInt({
+    required TextEditingController controller,
+    required int fallback,
+  }) {
+    final parsed = int.tryParse(controller.text.trim());
+    return parsed ?? fallback;
   }
 
   void _applyRunState(AgentRunState state, {bool updatePayload = true}) {
@@ -784,7 +833,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     }
 
     final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
-    final timeLabel = _formatLogTime(DateTime.fromMillisecondsSinceEpoch(nowMs));
+    final timeLabel = _formatLogTime(
+      DateTime.fromMillisecondsSinceEpoch(nowMs),
+    );
     final levelLabel = switch (level.toLowerCase()) {
       'info' => '信息',
       'warn' => '警告',

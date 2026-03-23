@@ -20,11 +20,6 @@ class LangChainAgentRuntimeService {
   LangChainAgentRuntimeService({required AgentPlatformGateway platformGateway})
     : _platformGateway = platformGateway;
 
-  // 提高复杂场景容忍度，并配合重复调用熔断，降低误触发保护上限概率。
-  static const int _executorMaxIterations = 260;
-  static const Duration _executorMaxExecutionTime = Duration(minutes: 5);
-  static const int _maxRepeatedSameToolCall = 8;
-  static const int _maxNoProgressActionStreak = 12;
   static const String _executorLimitStopMessage =
       'Agent stopped due to iteration limit or time limit.';
 
@@ -40,12 +35,13 @@ class LangChainAgentRuntimeService {
     required AgentConfig config,
     required List<Map<String, String>> messages,
   }) async {
-    _validateConfig(config);
+    final sanitizedConfig = config.sanitized();
+    _validateConfig(sanitizedConfig);
     final prompt = _buildConnectivityPrompt(messages);
     final startedAt = DateTime.now();
 
     try {
-      final model = _buildModel(config);
+      final model = _buildModel(sanitizedConfig);
       final response = await model.invoke(PromptValue.string(prompt));
       final reply = response.output.content.trim();
       final latencyMs = DateTime.now().difference(startedAt).inMilliseconds;
@@ -56,8 +52,10 @@ class LangChainAgentRuntimeService {
           message: '模型返回了空内容。',
           reply: '',
           latencyMs: latencyMs,
-          model: config.model,
-          providerUrl: ProviderUrlResolver.resolveBaseUrl(config.providerUrl),
+          model: sanitizedConfig.model,
+          providerUrl: ProviderUrlResolver.resolveBaseUrl(
+            sanitizedConfig.providerUrl,
+          ),
         );
       }
 
@@ -66,8 +64,10 @@ class LangChainAgentRuntimeService {
         message: '模型连通性正常。',
         reply: reply,
         latencyMs: latencyMs,
-        model: config.model,
-        providerUrl: ProviderUrlResolver.resolveBaseUrl(config.providerUrl),
+        model: sanitizedConfig.model,
+        providerUrl: ProviderUrlResolver.resolveBaseUrl(
+          sanitizedConfig.providerUrl,
+        ),
       );
     } catch (error) {
       return ConnectivityProbeResult(
@@ -75,8 +75,10 @@ class LangChainAgentRuntimeService {
         message: error.toString(),
         reply: '',
         latencyMs: DateTime.now().difference(startedAt).inMilliseconds,
-        model: config.model,
-        providerUrl: ProviderUrlResolver.resolveBaseUrl(config.providerUrl),
+        model: sanitizedConfig.model,
+        providerUrl: ProviderUrlResolver.resolveBaseUrl(
+          sanitizedConfig.providerUrl,
+        ),
       );
     }
   }
@@ -87,7 +89,9 @@ class LangChainAgentRuntimeService {
     required AgentLogCallback onLog,
     required AgentToolResultCallback onToolResult,
   }) async {
-    _validateConfig(config);
+    final sanitizedConfig = config.sanitized();
+    final runLimits = _resolveRunLimits(sanitizedConfig);
+    _validateConfig(sanitizedConfig);
     _stopRequested = false;
 
     final nativeTools = await _platformGateway.listTools();
@@ -117,7 +121,7 @@ class LangChainAgentRuntimeService {
     onStatus(latestState);
 
     try {
-      final model = _buildModel(config);
+      final model = _buildModel(sanitizedConfig);
       final tools = nativeTools
           .map(
             (definition) => _createTool(
@@ -129,11 +133,13 @@ class LangChainAgentRuntimeService {
                   lastToolCallSignature = callSignature;
                   repeatedToolCallStreak = 1;
                 }
-                if (repeatedToolCallStreak >= _maxRepeatedSameToolCall) {
+                if (repeatedToolCallStreak >=
+                    runLimits.maxRepeatedSameToolCall) {
                   throw _AgentStalledException(
                     _buildRepeatedCallMessage(
                       toolName: definition.name,
                       repeatCount: repeatedToolCallStreak,
+                      limit: runLimits.maxRepeatedSameToolCall,
                     ),
                   );
                 }
@@ -155,11 +161,13 @@ class LangChainAgentRuntimeService {
                   actionToolNames: actionToolNames,
                 )) {
                   noProgressActionStreak += 1;
-                  if (noProgressActionStreak >= _maxNoProgressActionStreak) {
+                  if (noProgressActionStreak >=
+                      runLimits.maxNoProgressActionStreak) {
                     throw _AgentStalledException(
                       _buildNoProgressActionMessage(
                         streak: noProgressActionStreak,
                         lastTool: definition.name,
+                        limit: runLimits.maxNoProgressActionStreak,
                       ),
                     );
                   }
@@ -186,8 +194,8 @@ class LangChainAgentRuntimeService {
       final agent = ToolsAgent.fromLLMAndTools(llm: model, tools: tools);
       final executor = AgentExecutor(
         agent: agent,
-        maxIterations: _executorMaxIterations,
-        maxExecutionTime: _executorMaxExecutionTime,
+        maxIterations: runLimits.maxIterations,
+        maxExecutionTime: runLimits.maxExecutionTime,
       );
 
       latestState = latestState.copyWith(
@@ -198,7 +206,9 @@ class LangChainAgentRuntimeService {
       );
       onStatus(latestState);
 
-      final output = await executor.run(_buildAgentTask(config, nativeTools));
+      final output = await executor.run(
+        _buildAgentTask(sanitizedConfig, nativeTools, runLimits),
+      );
       final finalText = output.trim();
 
       if (_stopRequested) {
@@ -214,7 +224,10 @@ class LangChainAgentRuntimeService {
       }
 
       if (_isExecutorStoppedByLimit(finalText)) {
-        final message = _buildExecutorLimitMessage(step: toolStep);
+        final message = _buildExecutorLimitMessage(
+          step: toolStep,
+          limits: runLimits,
+        );
         final stoppedByLimit = AgentRunState(
           running: false,
           status: 'stopped',
@@ -268,7 +281,10 @@ class LangChainAgentRuntimeService {
       onStatus(stopped);
       return stopped;
     } catch (error) {
-      final normalizedMessage = _normalizeRuntimeError(error);
+      final normalizedMessage = _normalizeRuntimeError(
+        error,
+        limits: runLimits,
+      );
       final failed = AgentRunState(
         running: false,
         status: 'failed',
@@ -303,7 +319,8 @@ class LangChainAgentRuntimeService {
     required void Function(
       NativeToolExecutionResult result,
       String callSignature,
-    ) onToolCompleted,
+    )
+    onToolCompleted,
   }) {
     final tool = Tool.fromFunction<Map<String, dynamic>, String>(
       name: definition.name,
@@ -331,7 +348,11 @@ class LangChainAgentRuntimeService {
     return tool;
   }
 
-  String _buildAgentTask(AgentConfig config, List<NativeToolDefinition> tools) {
+  String _buildAgentTask(
+    AgentConfig config,
+    List<NativeToolDefinition> tools,
+    _AgentRunLimits limits,
+  ) {
     final toolNames = tools.map((tool) => tool.name).join(', ');
     return '''
 You are an Android automation agent running inside a Flutter control layer.
@@ -344,20 +365,24 @@ System architecture:
 Execution rules:
 - Start by understanding the current page before taking action.
 - Use `get_question_context` as the primary source of question data, and use `get_page_context` only as supplemental structural context.
-- Avoid relying on fixed page-type assumptions; decide based on extracted question text, options, inputs, and actions.
+- Avoid relying on fixed screen labels or hardcoded page assumptions; decide based on extracted question text, options, inputs, and actions.
 - After finishing the current question input/selection, you must attempt to advance using the `next` action when present.
 - If `next` is not explicitly listed but a progress action is likely, re-read context and try available candidate navigation actions before stopping.
-- After `click_element`, `toggle_element`, `set_text`, `scroll_screen`, or `press_global`, call `wait_for_idle` before reading the UI again.
-- For text-input/fill-blank questions, verify each required input is actually written by re-reading `get_question_context` before moving to next.
+- Action tools already include a short post-action verification window.
+- Use `wait_for_idle` before re-reading the UI only when navigation, scrolling, global actions, or delayed async refresh is likely. Do not call it mechanically after every successful `toggle_element` or `set_text`.
+- For text-input/fill-blank questions, fill every required input field in order. If you are uncertain about content, provide the most likely concise answer instead of stalling.
+- For text-input/fill-blank questions, verify each required input is actually written by re-reading `get_question_context` before moving to next. If `set_text` returns `verificationLevel=weak`, continue with caution and log the uncertainty in your final note.
 - For true/false questions, match options using text features like `对/错/是/否/true/false` and avoid using confirm-style assumptions.
 - If a tool fails, re-read the current context before retrying.
 - Do not repeat the same failed strategy more than 2 times. If progress still stalls, stop and return a concise blocker summary instead of looping.
 - Do not call the same tool with the same arguments more than 4 times in a row.
 - If action calls keep returning no UI change, stop early and report the blocker instead of brute-force retries.
+- After finishing current question input/selection, you must advance. If `next` is missing or no progress is observed, execute up to 2 rounds of: small scroll down -> `get_question_context` -> retry candidate next action.
 - Keep actions minimal and deterministic.
 - If auto submit is disabled, stop at the submit page and explain that manual confirmation is required.
 - If auto submit is enabled, you may submit only when the submit intent is clear from the UI.
 - Do not fabricate UI state. If you are unsure, call a tool.
+- Runtime guardrails: max ${limits.maxIterations} executor iterations, ${limits.maxExecutionTime.inMinutes} minutes, repeated same tool limit ${limits.maxRepeatedSameToolCall}, no-progress action streak limit ${limits.maxNoProgressActionStreak}.
 
 Available Android tools:
 $toolNames
@@ -415,9 +440,26 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
     if (!result.ok) {
       return true;
     }
+    if (_hasSemanticProgress(result)) {
+      return false;
+    }
     final postCheckChanged = result.result['postCheckChanged'];
     if (postCheckChanged is bool) {
       return !postCheckChanged;
+    }
+    return false;
+  }
+
+  bool _hasSemanticProgress(NativeToolExecutionResult result) {
+    const semanticProgressKeys = <String>{
+      'postCheckMatched',
+      'postCheckSatisfied',
+      'progressSatisfied',
+    };
+    for (final key in semanticProgressKeys) {
+      if (result.result[key] == true) {
+        return true;
+      }
     }
     return false;
   }
@@ -429,10 +471,11 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
 
   Object? _normalizeStableValue(Object? value) {
     if (value is Map) {
-      final entries = value.entries
-          .map((entry) => MapEntry(entry.key.toString(), entry.value))
-          .toList()
-        ..sort((left, right) => left.key.compareTo(right.key));
+      final entries =
+          value.entries
+              .map((entry) => MapEntry(entry.key.toString(), entry.value))
+              .toList()
+            ..sort((left, right) => left.key.compareTo(right.key));
       final normalized = <String, Object?>{};
       for (final entry in entries) {
         normalized[entry.key] = _normalizeStableValue(entry.value);
@@ -448,28 +491,45 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
   String _buildRepeatedCallMessage({
     required String toolName,
     required int repeatCount,
+    required int limit,
   }) {
-    return '检测到工具 $toolName 使用相同参数连续执行 $repeatCount 次，已提前停止以避免触发保护上限。请先确认界面是否变化，再重试。';
+    return '检测到工具 $toolName 使用相同参数连续执行 $repeatCount 次（阈值 $limit），已提前停止以避免触发保护上限。请先确认界面是否变化，再重试。';
   }
 
   String _buildNoProgressActionMessage({
     required int streak,
     required String lastTool,
+    required int limit,
   }) {
-    return '检测到动作调用连续 $streak 次无有效界面变化（最后工具：$lastTool），已提前停止以避免触发保护上限。请先检查页面是否可操作。';
+    return '检测到动作调用连续 $streak 次无有效界面变化（阈值 $limit，最后工具：$lastTool），已提前停止以避免触发保护上限。请先检查页面是否可操作。';
   }
 
-  String _buildExecutorLimitMessage({required int step}) {
-    return 'Agent 已达到执行保护上限（最多 $_executorMaxIterations 轮或 ${_executorMaxExecutionTime.inMinutes} 分钟，当前执行 $step 步）并自动停止。若仍无法推进，请检查当前页面是否可操作并提供更明确任务目标后重试。';
+  String _buildExecutorLimitMessage({
+    required int step,
+    required _AgentRunLimits limits,
+  }) {
+    return 'Agent 已达到执行保护上限（最多 ${limits.maxIterations} 轮或 ${limits.maxExecutionTime.inMinutes} 分钟，当前执行 $step 步）并自动停止。若仍无法推进，请检查当前页面是否可操作并提供更明确任务目标后重试。';
   }
 
-  String _normalizeRuntimeError(Object error) {
+  _AgentRunLimits _resolveRunLimits(AgentConfig config) {
+    return _AgentRunLimits(
+      maxIterations: config.sanitizedMaxIterations,
+      maxExecutionTime: Duration(minutes: config.sanitizedMaxExecutionMinutes),
+      maxRepeatedSameToolCall: config.sanitizedMaxRepeatedSameToolCall,
+      maxNoProgressActionStreak: config.sanitizedMaxNoProgressActionStreak,
+    );
+  }
+
+  String _normalizeRuntimeError(
+    Object error, {
+    required _AgentRunLimits limits,
+  }) {
     final raw = error.toString().trim();
     if (raw.isEmpty) {
       return 'Agent 运行失败：未知错误。';
     }
     if (_isExecutorStoppedByLimit(raw)) {
-      return _buildExecutorLimitMessage(step: 0);
+      return _buildExecutorLimitMessage(step: 0, limits: limits);
     }
     return raw;
   }
@@ -483,4 +543,18 @@ class _AgentStalledException implements Exception {
   const _AgentStalledException(this.message);
 
   final String message;
+}
+
+class _AgentRunLimits {
+  const _AgentRunLimits({
+    required this.maxIterations,
+    required this.maxExecutionTime,
+    required this.maxRepeatedSameToolCall,
+    required this.maxNoProgressActionStreak,
+  });
+
+  final int maxIterations;
+  final Duration maxExecutionTime;
+  final int maxRepeatedSameToolCall;
+  final int maxNoProgressActionStreak;
 }

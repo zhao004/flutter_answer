@@ -5,7 +5,7 @@ import java.util.Locale
 enum class AutomationFlowState {
     IDLE,
     PAGE_DETECTING,
-    PAGE_CLASSIFIED,
+    CONTEXT_ANALYZED,
     QUESTION_PARSING,
     ANSWER_MATCHING,
     WAITING_CONFIRM,
@@ -47,10 +47,10 @@ class AutomationFlowStateMachine(
             AutomationFlowState.ERROR_RECOVERING,
         ),
         AutomationFlowState.PAGE_DETECTING to setOf(
-            AutomationFlowState.PAGE_CLASSIFIED,
+            AutomationFlowState.CONTEXT_ANALYZED,
             AutomationFlowState.ERROR_RECOVERING,
         ),
-        AutomationFlowState.PAGE_CLASSIFIED to setOf(
+        AutomationFlowState.CONTEXT_ANALYZED to setOf(
             AutomationFlowState.QUESTION_PARSING,
             AutomationFlowState.ANSWER_MATCHING,
             AutomationFlowState.ACTION_EXECUTING,
