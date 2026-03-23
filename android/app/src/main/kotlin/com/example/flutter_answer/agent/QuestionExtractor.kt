@@ -284,9 +284,7 @@ object QuestionExtractor {
             submitDialogPage = submitDialogPage,
         )
         val needConfirm = !resumeEntryPage && !submitReadyPage && !submitDialogPage && confidence < 0.64
-        val screenPackage = snapshot.screen["packageName"]?.toString()
         val contextSignature = buildContextSignature(
-            screenPackage = screenPackage,
             regions = regions,
             actions = actions,
             submitOnlyPage = submitOnlyPage,
@@ -301,7 +299,6 @@ object QuestionExtractor {
         val cacheProbe = QuestionFingerprintCache.record(fingerprint)
 
         return QuestionContext(
-            screenPackage = screenPackage,
             contextSignature = contextSignature,
             questionIndex = questionIndex,
             question = cleanedQuestion,
@@ -662,12 +659,10 @@ object QuestionExtractor {
     }
 
     fun buildContextSignature(
-        screenPackage: String?,
         regions: List<UiRegion>,
         actions: List<QuestionAction>,
         submitOnlyPage: Boolean,
     ): String {
-        val safePackage = screenPackage?.trim().orEmpty().ifBlank { "unknown_package" }
         val regionPart = regions
             .map(UiRegion::region)
             .distinct()
@@ -681,7 +676,7 @@ object QuestionExtractor {
             .joinToString("+")
             .ifBlank { "no_actions" }
         val modePart = if (submitOnlyPage) "submit_only" else "interactive"
-        return "$safePackage#$regionPart#$actionPart#$modePart"
+        return "$regionPart#$actionPart#$modePart"
     }
 
     private fun extractQuestionIndex(rawQuestion: String): Int? {

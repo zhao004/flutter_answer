@@ -17,26 +17,16 @@ class ExamAccessibilityService : AccessibilityService() {
         var lastEventAtMs: Long = 0L
     }
 
-    @Volatile
-    private var currentTargetPackageName: String? = null
-
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         lastEventAtMs = SystemClock.uptimeMillis()
-        updateCurrentPackageName(resolveCurrentTargetPackageName())
         AgentEventBus.log("info", "无障碍服务已连接。")
         AgentEventBus.serviceStatus(AccessibilityAgent.peekServiceStatus())
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         lastEventAtMs = SystemClock.uptimeMillis()
-        val eventType = event?.eventType ?: 0
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) {
-            updateCurrentPackageName(resolveCurrentTargetPackageName(event))
-        }
     }
 
     override fun onInterrupt() {
@@ -47,7 +37,6 @@ class ExamAccessibilityService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
-        currentTargetPackageName = null
         AgentEventBus.log("warn", "无障碍服务已销毁。")
         AgentEventBus.serviceStatus(AccessibilityAgent.peekServiceStatus())
         super.onDestroy()
@@ -57,32 +46,6 @@ class ExamAccessibilityService : AccessibilityService() {
         return findTargetRoot() ?: rootInActiveWindow?.takeUnless {
             it.packageName?.toString() == packageName
         }
-    }
-
-    fun currentPackageName(): String? {
-        return currentRoot()?.packageName?.toString() ?: currentTargetPackageName
-    }
-
-    private fun updateCurrentPackageName(candidate: String?) {
-        if (candidate.isNullOrBlank() || candidate == currentTargetPackageName) {
-            return
-        }
-        currentTargetPackageName = candidate
-        AgentEventBus.log("info", "当前包名已更新为：$candidate")
-        println("当前包名已更新为：$candidate")
-        AgentEventBus.serviceStatus(AccessibilityAgent.peekServiceStatus())
-    }
-
-    private fun resolveCurrentTargetPackageName(event: AccessibilityEvent? = null): String? {
-        val eventPackage = event?.packageName?.toString()?.takeUnless {
-            it.isBlank() || it == packageName
-        }
-        if (!eventPackage.isNullOrBlank()) {
-            return eventPackage
-        }
-        return findTargetRoot()?.packageName?.toString()?.takeUnless {
-            it.isBlank() || it == packageName
-        } ?: currentTargetPackageName
     }
 
     private fun findTargetRoot(): AccessibilityNodeInfo? {

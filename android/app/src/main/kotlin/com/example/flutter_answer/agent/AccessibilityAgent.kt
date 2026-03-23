@@ -49,13 +49,11 @@ object AccessibilityAgent {
 
     fun peekServiceStatus(): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
-        val currentPackageName = service?.currentPackageName()
         return mapOf(
             "ok" to true,
             "enabled" to (service != null),
             "lastEventAtMs" to ExamAccessibilityService.lastEventAtMs,
             "hasActiveWindow" to (service?.currentRoot() != null),
-            "currentPackageName" to currentPackageName,
             "flow" to flowStateMachine.snapshot(),
             "latestContextSignature" to currentContextTag(),
         )
@@ -63,10 +61,7 @@ object AccessibilityAgent {
 
     fun getServiceStatus(): Map<String, Any?> {
         val payload = peekServiceStatus()
-        AgentEventBus.log(
-            "info",
-            "服务状态已刷新，当前包名：${payload["currentPackageName"] ?: "未识别"}",
-        )
+        AgentEventBus.log("info", "服务状态已刷新。")
         AgentEventBus.toolResult("getServiceStatus", true, payload)
         return payload
     }
@@ -168,7 +163,6 @@ object AccessibilityAgent {
         lastQuestionContext = context
         rememberScreenContext(
             summary = ScreenContextSummary(
-                packageName = context.screenPackage,
                 contextSignature = context.contextSignature,
                 confidence = context.structureConfidence,
                 signals = context.structureSignals,
@@ -672,7 +666,6 @@ object AccessibilityAgent {
         if (hasFooterActions) {
             confidence += 0.08
         }
-        val packageName = snapshot.screen["packageName"]?.toString()
         val signals = linkedMapOf<String, Double>(
             "regionCount" to regions.size.toDouble(),
             "questionSignal" to if (hasQuestionSignals) 1.0 else 0.0,
@@ -681,9 +674,7 @@ object AccessibilityAgent {
             "nodeCount" to snapshot.elements.size.toDouble(),
         )
         return ScreenContextSummary(
-            packageName = packageName,
             contextSignature = QuestionExtractor.buildContextSignature(
-                screenPackage = packageName,
                 regions = regions,
                 actions = emptyList(),
                 submitOnlyPage = false,
@@ -704,7 +695,6 @@ object AccessibilityAgent {
         val existingKinds = actions.map { action -> action.kind }.toSet()
         val actionCacheScope = resolveActionCacheScope(
             contextSignature = context.contextSignature,
-            packageName = context.screenPackage,
         )
 
         if ("next" !in existingKinds && hasCachedAction(kind = "next", contextScope = actionCacheScope)) {
@@ -742,7 +732,6 @@ object AccessibilityAgent {
     private fun cacheActionLocators(context: QuestionContext) {
         val actionCacheScope = resolveActionCacheScope(
             contextSignature = context.contextSignature,
-            packageName = context.screenPackage,
         )
         context.actions.forEach { action ->
             val locator = locatorCache[action.id]
@@ -767,17 +756,14 @@ object AccessibilityAgent {
         actionLocatorCache[buildActionLocatorKey(actionCacheScope, inferredKind)] = locator
     }
 
-    private fun resolveActionCacheScope(contextSignature: String, packageName: String?): String {
-        // 缓存键加入包名，避免不同应用/页面之间出现动作定位串扰。
-        val safePackage = packageName?.trim().orEmpty().ifBlank { "unknown_package" }
+    private fun resolveActionCacheScope(contextSignature: String): String {
+        // 动作缓存仅按结构签名分桶，避免前台包名切换导致缓存命中率抖动。
         val safeSignature = contextSignature.trim().ifBlank { "generic_context" }
-        return "$safePackage#$safeSignature"
+        return safeSignature
     }
 
     private fun currentActionCacheScope(): String {
-        val packageName = lastQuestionContext?.screenPackage
-            ?: lastScreenContextSummary?.packageName
-        return resolveActionCacheScope(currentContextTag(), packageName)
+        return resolveActionCacheScope(currentContextTag())
     }
 
     private fun buildActionLocatorKey(contextScope: String, kind: String): String {
@@ -854,7 +840,6 @@ object AccessibilityAgent {
         if (root == null) {
             return UiSnapshot(
                 screen = mapOf(
-                    "packageName" to null,
                     "timestamp" to System.currentTimeMillis(),
                 ),
                 elements = emptyList(),
@@ -865,7 +850,6 @@ object AccessibilityAgent {
         traverse(root, 0, elements, IdGenerator(), refreshLocatorCache)
         return UiSnapshot(
             screen = mapOf(
-                "packageName" to root.packageName?.toString(),
                 "timestamp" to System.currentTimeMillis(),
             ),
             elements = elements,
@@ -1666,14 +1650,12 @@ object AccessibilityAgent {
     )
 
     private data class ScreenContextSummary(
-        val packageName: String?,
         val contextSignature: String,
         val confidence: Double,
         val signals: Map<String, Double>,
         val regionNames: List<String>,
     ) {
         fun toMap(): Map<String, Any?> = mapOf(
-            "packageName" to packageName,
             "contextSignature" to contextSignature,
             "confidence" to confidence,
             "signals" to signals,

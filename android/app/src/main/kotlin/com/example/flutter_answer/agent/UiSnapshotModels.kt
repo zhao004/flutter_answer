@@ -141,7 +141,6 @@ data class QuestionCacheProbe(
 }
 
 data class QuestionContext(
-    val screenPackage: String?,
     val contextSignature: String,
     val questionIndex: Int?,
     val question: String,
@@ -161,7 +160,6 @@ data class QuestionContext(
     val structureSignals: Map<String, Double>,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
-        "screenPackage" to screenPackage,
         "contextSignature" to contextSignature,
         "questionIndex" to questionIndex,
         "question" to question,

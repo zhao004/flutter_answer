@@ -97,14 +97,6 @@ class _OverlayViewState extends State<OverlayView> {
 
   bool get _running => _agentRunStatus['running'] == true;
 
-  String get _currentPackageName {
-    final value = _serviceStatus['currentPackageName']?.toString().trim() ?? '';
-    if (value.isEmpty) {
-      return '未识别前台应用';
-    }
-    return value;
-  }
-
   bool get _accessibilityEnabled => _serviceStatus['enabled'] == true;
 
   bool get _hasActiveWindow => _serviceStatus['hasActiveWindow'] == true;
@@ -327,15 +319,6 @@ class _OverlayViewState extends State<OverlayView> {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          '当前包名：$_currentPackageName',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: const Color(0xFF5A6E6C),
-                            fontFamily: 'monospace',
-                          ),
-                        ),
                       ],
                     ),
                   ),
