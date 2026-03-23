@@ -1,26 +1,42 @@
 package com.example.flutter_answer.agent
 
+import android.accessibilityservice.GestureDescription
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 object AccessibilityAgent {
 
     private const val stableWindowMs = 350L
+    private const val actionPostCheckTimeoutMs = 1200L
+    private const val actionPostCheckPollMs = 80L
+    private const val uiFingerprintNodeLimit = 220
+    private const val uiFingerprintTextLimit = 48
     private const val minMatchScore = 25
     private const val actionCacheMaxSize = 80
+    private const val gestureTapDurationMs = 40L
+    private const val gestureTapResultWaitMs = 450L
+    private const val minGestureTapSizePx = 48
+    private const val maxGestureTapAreaRatio = 0.18
+    private const val inputActivationWaitMs = 140L
+    private const val inputBlurWaitMs = 100L
+    private val blankHintPattern = Regex("^第\\s*\\d{1,3}\\s*空[:：]?$")
+    private val inputPlaceholderKeywords = listOf("请输入答案", "请填写答案", "轻点两下来编辑", "未作答", "点击输入", "双击输入")
     private val locatorCache = LinkedHashMap<String, NodeLocator>()
     private val actionLocatorCache = LinkedHashMap<String, NodeLocator>()
     private val flowStateMachine = AutomationFlowStateMachine()
 
     @Volatile
-    private var lastPageClassification: PageClassification? = null
+    private var lastScreenContextSummary: ScreenContextSummary? = null
 
     @Volatile
     private var lastRegions: List<UiRegion> = emptyList()
@@ -40,7 +56,7 @@ object AccessibilityAgent {
             "hasActiveWindow" to (service?.currentRoot() != null),
             "currentPackageName" to currentPackageName,
             "flow" to flowStateMachine.snapshot(),
-            "latestPageType" to (lastPageClassification?.pageType ?: "unknown_context"),
+            "latestContextSignature" to currentContextTag(),
         )
     }
 
@@ -75,23 +91,23 @@ object AccessibilityAgent {
 
         val snapshot = dumpUiTree(root)
         val regions = UiRegionLocator.locate(snapshot)
-        val context = buildScreenContextSummary(snapshot, regions)
-        rememberPageContext(context, regions)
-        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "页面结构分析完成：${context.pageType}。")
+        val summary = buildScreenContextSummary(snapshot, regions)
+        rememberScreenContext(summary, regions)
+        transitionTo(AutomationFlowState.CONTEXT_ANALYZED, "页面结构分析完成。")
 
         val payload = success(
-            message = "页面结构分析完成：${context.pageType}，置信度 ${(context.confidence * 100).toInt()}%。",
+            message = "页面结构分析完成，识别到 ${regions.size} 个区域信号。",
             extra = mapOf(
-                "context" to context.toMap(),
-                "page" to context.toMap(),
+                "context" to summary.toMap(),
+                "summary" to summary.toMap(),
                 "regions" to regions.map(UiRegion::toMap),
                 "nodeCount" to snapshot.elements.size,
             ),
         )
         RecognitionTraceStore.record(
             stage = "page_context",
-            pageType = context.pageType,
-            confidence = context.confidence,
+            contextTag = summary.contextSignature,
+            confidence = summary.confidence,
             ok = true,
             message = payload["message"].toString(),
             payload = mapOf("regionCount" to regions.size),
@@ -110,23 +126,23 @@ object AccessibilityAgent {
 
         val snapshot = dumpUiTree(root)
         val regions = UiRegionLocator.locate(snapshot)
-        val context = buildScreenContextSummary(snapshot, regions)
-        rememberPageContext(context, regions)
-        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "UI 快照采集与结构分析完成。")
+        val summary = buildScreenContextSummary(snapshot, regions)
+        rememberScreenContext(summary, regions)
+        transitionTo(AutomationFlowState.CONTEXT_ANALYZED, "UI 快照采集与结构分析完成。")
 
         val payload = success(
-            message = "已采集 ${snapshot.elements.size} 个界面节点，上下文：${context.pageType}。",
+            message = "已采集 ${snapshot.elements.size} 个界面节点，并生成结构摘要。",
             extra = mapOf(
                 "snapshot" to snapshot.toMap(),
-                "context" to context.toMap(),
-                "page" to context.toMap(),
+                "context" to summary.toMap(),
+                "summary" to summary.toMap(),
                 "regions" to regions.map(UiRegion::toMap),
             ),
         )
         RecognitionTraceStore.record(
             stage = "ui_snapshot",
-            pageType = context.pageType,
-            confidence = context.confidence,
+            contextTag = summary.contextSignature,
+            confidence = summary.confidence,
             ok = true,
             message = payload["message"].toString(),
             payload = mapOf("nodeCount" to snapshot.elements.size),
@@ -144,18 +160,18 @@ object AccessibilityAgent {
             ?: return reportFailure("getQuestionContext", "未获取到可用节点，无法提取题目上下文。", "window_unavailable")
 
         val snapshot = dumpUiTree(root)
-        transitionTo(AutomationFlowState.PAGE_CLASSIFIED, "页面采集完成，进入题目解析。")
+        transitionTo(AutomationFlowState.CONTEXT_ANALYZED, "页面采集完成，进入结构提取。")
         transitionTo(AutomationFlowState.QUESTION_PARSING, "题目结构化解析中。")
 
         val context = enrichContextWithCachedActions(QuestionExtractor.extract(snapshot))
         lastQuestionContext = context
-        rememberPageContext(
-            page = PageClassification(
-                pageType = context.pageType,
-                confidence = context.pageTypeConfidence,
-                reason = context.pageTypeReason,
-                scores = context.pageScores,
-                signals = emptyMap(),
+        rememberScreenContext(
+            summary = ScreenContextSummary(
+                packageName = context.screenPackage,
+                contextSignature = context.contextSignature,
+                confidence = context.structureConfidence,
+                signals = context.structureSignals,
+                regionNames = context.regions.map(UiRegion::region).distinct().sorted(),
             ),
             regions = context.regions,
         )
@@ -169,12 +185,12 @@ object AccessibilityAgent {
 
         val questionPreview = context.question.take(80).ifBlank { "（题干为空）" }
         val payload = success(
-            message = "上下文：${context.pageType}，识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
+            message = "结构化上下文已提取，识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
             extra = mapOf("context" to context.toMap()),
         )
         RecognitionTraceStore.record(
             stage = "question_context",
-            pageType = context.pageType,
+            contextTag = context.contextSignature,
             confidence = context.confidence,
             ok = true,
             message = payload["message"].toString(),
@@ -225,10 +241,9 @@ object AccessibilityAgent {
             return reportFailure("clickElement", "节点 $elementId 执行点击失败。", "click_failed")
         }
 
-        Thread.sleep(160)
         transitionTo(AutomationFlowState.RESULT_VERIFYING, "点击动作已发送，开始回读校验。")
-        val afterFingerprint = captureUiFingerprint(service?.currentRoot())
-        val changed = beforeFingerprint != afterFingerprint
+        val progress = observeUiProgress(beforeFingerprint)
+        val changed = progress.changed
 
         val result = if (changed || riskLevel != "high") {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "点击动作回读通过。")
@@ -238,6 +253,7 @@ object AccessibilityAgent {
                     "elementId" to elementId,
                     "riskLevel" to riskLevel,
                     "postCheckChanged" to changed,
+                    "postCheckWaitedMs" to progress.waitedMs,
                 ),
             )
         } else {
@@ -250,8 +266,8 @@ object AccessibilityAgent {
         }
         RecognitionTraceStore.record(
             stage = "click_element",
-            pageType = currentPageType(),
-            confidence = currentPageConfidence(),
+            contextTag = currentContextTag(),
+            confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
             payload = mapOf("riskLevel" to riskLevel, "postCheckChanged" to changed),
@@ -288,10 +304,10 @@ object AccessibilityAgent {
         }
 
         transitionTo(AutomationFlowState.RESULT_VERIFYING, "输入动作已发送，开始回读校验。")
+        val progress = observeUiProgress(beforeFingerprint)
         val refreshedText = findNodeById(elementId)?.let(::extractNodeText).orEmpty()
         val postCheckMatched = writeResult.matched || isInputTextMatched(refreshedText, text)
-        val afterFingerprint = captureUiFingerprint(service?.currentRoot())
-        val changed = beforeFingerprint != afterFingerprint
+        val changed = progress.changed
 
         val result = if (postCheckMatched) {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "输入动作回读通过。")
@@ -304,6 +320,7 @@ object AccessibilityAgent {
                     "lastReadText" to writeResult.lastReadText,
                     "postCheckMatched" to postCheckMatched,
                     "postCheckChanged" to changed,
+                    "postCheckWaitedMs" to progress.waitedMs,
                 ),
             )
         } else {
@@ -316,8 +333,8 @@ object AccessibilityAgent {
         }
         RecognitionTraceStore.record(
             stage = "set_text",
-            pageType = currentPageType(),
-            confidence = currentPageConfidence(),
+            contextTag = currentContextTag(),
+            confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
             payload = mapOf("postCheckMatched" to postCheckMatched, "postCheckChanged" to changed),
@@ -350,6 +367,7 @@ object AccessibilityAgent {
             )
 
         val currentChecked = toggleNode.isChecked
+        val beforeFingerprint = captureUiFingerprint(ExamAccessibilityService.instance?.currentRoot())
         val result = if (currentChecked == targetChecked) {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "节点状态已满足，无需切换。")
             success(
@@ -357,13 +375,15 @@ object AccessibilityAgent {
                 extra = mapOf(
                     "elementId" to elementId,
                     "checked" to currentChecked,
+                    "postCheckChanged" to false,
+                    "postCheckSatisfied" to true,
                 ),
             )
         } else if (!performToggle(toggleNode)) {
             failure("切换节点 $elementId 失败。", "toggle_failed")
         } else {
-            Thread.sleep(120)
             transitionTo(AutomationFlowState.RESULT_VERIFYING, "勾选切换已发送，开始回读校验。")
+            val progress = observeUiProgress(beforeFingerprint)
             val refreshedChecked = findNodeById(elementId)?.let(::findToggleNode)?.isChecked
             if (refreshedChecked == null || refreshedChecked == targetChecked) {
                 transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "勾选切换回读通过。")
@@ -372,6 +392,10 @@ object AccessibilityAgent {
                     extra = mapOf(
                         "elementId" to elementId,
                         "checked" to (refreshedChecked ?: targetChecked),
+                        "postCheckChanged" to (progress.changed || currentChecked != (refreshedChecked
+                            ?: targetChecked)),
+                        "postCheckSatisfied" to true,
+                        "postCheckWaitedMs" to progress.waitedMs,
                     ),
                 )
             } else {
@@ -390,8 +414,8 @@ object AccessibilityAgent {
         }
         RecognitionTraceStore.record(
             stage = "toggle_element",
-            pageType = currentPageType(),
-            confidence = currentPageConfidence(),
+            contextTag = currentContextTag(),
+            confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
         )
@@ -444,8 +468,11 @@ object AccessibilityAgent {
         }
 
         transitionTo(AutomationFlowState.RESULT_VERIFYING, "滚动动作已发送，开始回读校验。")
-        val afterFingerprint = captureUiFingerprint(service.currentRoot())
-        val changed = beforeFingerprint != afterFingerprint
+        val progress = observeUiProgress(
+            beforeFingerprint = beforeFingerprint,
+            timeoutMs = actionPostCheckTimeoutMs + (attempts * 120L),
+        )
+        val changed = progress.changed
 
         val result = if (stepsPerformed > 0 && changed) {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "滚动动作回读通过。")
@@ -456,6 +483,7 @@ object AccessibilityAgent {
                     "amount" to normalizedAmount,
                     "stepsPerformed" to stepsPerformed,
                     "postCheckChanged" to true,
+                    "postCheckWaitedMs" to progress.waitedMs,
                 ),
             )
         } else if (stepsPerformed > 0) {
@@ -470,8 +498,8 @@ object AccessibilityAgent {
         }
         RecognitionTraceStore.record(
             stage = "scroll_screen",
-            pageType = currentPageType(),
-            confidence = currentPageConfidence(),
+            contextTag = currentContextTag(),
+            confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
             payload = mapOf("stepsPerformed" to stepsPerformed, "postCheckChanged" to changed),
@@ -503,9 +531,23 @@ object AccessibilityAgent {
             }
         }
 
+        val beforeFingerprint = captureUiFingerprint(service.currentRoot())
         val result = if (service.performGlobalAction(globalAction)) {
+            transitionTo(AutomationFlowState.RESULT_VERIFYING, "系统级动作已发送，开始回读校验。")
+            val progress = observeUiProgress(beforeFingerprint)
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "系统级动作执行完成。")
-            success("已执行系统操作：$normalizedAction。", mapOf("action" to normalizedAction))
+            success(
+                if (progress.changed) {
+                    "已执行系统操作：$normalizedAction。"
+                } else {
+                    "已执行系统操作：$normalizedAction，暂未观测到界面变化。"
+                },
+                mapOf(
+                    "action" to normalizedAction,
+                    "postCheckChanged" to progress.changed,
+                    "postCheckWaitedMs" to progress.waitedMs,
+                ),
+            )
         } else {
             failure("执行系统操作失败：$normalizedAction。", "global_action_failed")
         }
@@ -516,11 +558,14 @@ object AccessibilityAgent {
         }
         RecognitionTraceStore.record(
             stage = "press_global",
-            pageType = currentPageType(),
-            confidence = currentPageConfidence(),
+            contextTag = currentContextTag(),
+            confidence = currentContextConfidence(),
             ok = ok,
             message = result["message"].toString(),
-            payload = mapOf("action" to normalizedAction),
+            payload = mapOf(
+                "action" to normalizedAction,
+                "postCheckChanged" to result["postCheckChanged"],
+            ),
         )
         AgentEventBus.log(if (ok) "info" else "error", result["message"].toString())
         AgentEventBus.toolResult("pressGlobal", ok, result)
@@ -544,8 +589,8 @@ object AccessibilityAgent {
                 )
                 RecognitionTraceStore.record(
                     stage = "wait_for_idle",
-                    pageType = currentPageType(),
-                    confidence = currentPageConfidence(),
+                    contextTag = currentContextTag(),
+                    confidence = currentContextConfidence(),
                     ok = true,
                     message = payload["message"].toString(),
                 )
@@ -559,24 +604,12 @@ object AccessibilityAgent {
         return reportFailure("waitForIdle", "等待界面稳定超时，已达到 ${timeout}ms。", "timeout")
     }
 
-    private fun buildScreenContextSummary(snapshot: UiSnapshot, regions: List<UiRegion>): PageClassification {
-        // 这里输出的是“结构化上下文摘要”而不是页面分类结果，避免错误分类导致后续策略偏航。
+    private fun buildScreenContextSummary(snapshot: UiSnapshot, regions: List<UiRegion>): ScreenContextSummary {
+        // 这里只保留结构摘要与信号强度，不再输出任何页面分类标签。
         val regionNames = regions.map(UiRegion::region).toSet()
         val hasQuestionSignals = "question" in regionNames || "options" in regionNames || "input" in regionNames
         val hasPopup = "popup" in regionNames
         val hasFooterActions = "footer_actions" in regionNames
-        val pageType = when {
-            hasPopup && hasFooterActions -> "submit_action_context"
-            hasPopup -> "dialog_context"
-            hasQuestionSignals -> "question_context"
-            else -> "generic_context"
-        }
-        val reason = when (pageType) {
-            "submit_action_context" -> "检测到弹窗区域与底部动作区，按提交/确认上下文处理。"
-            "dialog_context" -> "检测到中心弹窗区域，按弹窗上下文处理。"
-            "question_context" -> "检测到题干/选项/输入框区域，按题目上下文处理。"
-            else -> "未检测到稳定题目结构，按通用上下文处理。"
-        }
         var confidence = 0.26
         if (hasQuestionSignals) {
             confidence += 0.32
@@ -593,35 +626,40 @@ object AccessibilityAgent {
         if (hasFooterActions) {
             confidence += 0.08
         }
-        val signals = linkedMapOf<String, Any?>(
-            "regionNames" to regionNames.toList(),
-            "nodeCount" to snapshot.elements.size,
-            "packageName" to snapshot.screen["packageName"]?.toString(),
-        )
-        val scores = linkedMapOf(
+        val packageName = snapshot.screen["packageName"]?.toString()
+        val signals = linkedMapOf<String, Double>(
             "regionCount" to regions.size.toDouble(),
             "questionSignal" to if (hasQuestionSignals) 1.0 else 0.0,
             "popupSignal" to if (hasPopup) 1.0 else 0.0,
             "footerSignal" to if (hasFooterActions) 1.0 else 0.0,
+            "nodeCount" to snapshot.elements.size.toDouble(),
         )
-        return PageClassification(
-            pageType = pageType,
+        return ScreenContextSummary(
+            packageName = packageName,
+            contextSignature = QuestionExtractor.buildContextSignature(
+                screenPackage = packageName,
+                regions = regions,
+                actions = emptyList(),
+                submitOnlyPage = false,
+            ),
             confidence = confidence.coerceIn(0.12, 0.96),
-            reason = reason,
-            scores = scores,
             signals = signals,
+            regionNames = regionNames.toList().sorted(),
         )
     }
 
-    private fun rememberPageContext(page: PageClassification, regions: List<UiRegion>) {
-        lastPageClassification = page
+    private fun rememberScreenContext(summary: ScreenContextSummary, regions: List<UiRegion>) {
+        lastScreenContextSummary = summary
         lastRegions = regions
     }
 
     private fun enrichContextWithCachedActions(context: QuestionContext): QuestionContext {
         val actions = context.actions.toMutableList()
         val existingKinds = actions.map { action -> action.kind }.toSet()
-        val actionCacheScope = resolveActionCacheScope(context.pageType, context.screenPackage)
+        val actionCacheScope = resolveActionCacheScope(
+            contextSignature = context.contextSignature,
+            packageName = context.screenPackage,
+        )
 
         if ("next" !in existingKinds && hasCachedAction(kind = "next", contextScope = actionCacheScope)) {
             actions += QuestionAction(
@@ -656,11 +694,14 @@ object AccessibilityAgent {
     }
 
     private fun cacheActionLocators(context: QuestionContext) {
-        val actionCacheScope = resolveActionCacheScope(context.pageType, context.screenPackage)
+        val actionCacheScope = resolveActionCacheScope(
+            contextSignature = context.contextSignature,
+            packageName = context.screenPackage,
+        )
         context.actions.forEach { action ->
             val locator = locatorCache[action.id] ?: return@forEach
             val key = buildActionLocatorKey(actionCacheScope, action.kind)
-            actionLocatorCache[key] = locator.copy(pageType = context.pageType)
+            actionLocatorCache[key] = locator
         }
         while (actionLocatorCache.size > actionCacheMaxSize) {
             val oldestKey = actionLocatorCache.keys.firstOrNull() ?: break
@@ -670,25 +711,25 @@ object AccessibilityAgent {
 
     private fun rememberLocatorForAction(elementId: String) {
         val locator = locatorCache[elementId] ?: return
-        val pageType = currentPageType()
         val actionCacheScope = currentActionCacheScope()
         val inferredKind = inferActionKind(locator)
         if (inferredKind.isBlank()) {
             return
         }
-        actionLocatorCache[buildActionLocatorKey(actionCacheScope, inferredKind)] = locator.copy(pageType = pageType)
+        actionLocatorCache[buildActionLocatorKey(actionCacheScope, inferredKind)] = locator
     }
 
-    private fun resolveActionCacheScope(pageType: String, packageName: String?): String {
+    private fun resolveActionCacheScope(contextSignature: String, packageName: String?): String {
         // 缓存键加入包名，避免不同应用/页面之间出现动作定位串扰。
         val safePackage = packageName?.trim().orEmpty().ifBlank { "unknown_package" }
-        return "$safePackage#$pageType"
+        val safeSignature = contextSignature.trim().ifBlank { "generic_context" }
+        return "$safePackage#$safeSignature"
     }
 
     private fun currentActionCacheScope(): String {
         val packageName = lastQuestionContext?.screenPackage
-            ?: lastPageClassification?.signals?.get("packageName")?.toString()
-        return resolveActionCacheScope(currentPageType(), packageName)
+            ?: lastScreenContextSummary?.packageName
+        return resolveActionCacheScope(currentContextTag(), packageName)
     }
 
     private fun buildActionLocatorKey(contextScope: String, kind: String): String {
@@ -930,7 +971,16 @@ object AccessibilityAgent {
     }
 
     private fun click(node: AccessibilityNodeInfo?): Boolean {
-        var current = node
+        if (node == null) {
+            return false
+        }
+        if (supportsClickAction(node) && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return true
+        }
+        if (performGestureTapBestEffort(node)) {
+            return true
+        }
+        var current = node.parent
         while (current != null) {
             if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 return true
@@ -941,9 +991,15 @@ object AccessibilityAgent {
     }
 
     private fun canClick(node: AccessibilityNodeInfo?): Boolean {
-        var current = node
+        if (node == null || !node.isEnabled) {
+            return false
+        }
+        if (supportsClickAction(node) || isGestureTapCandidate(node)) {
+            return true
+        }
+        var current = node.parent
         while (current != null) {
-            if (current.isClickable && current.isEnabled) {
+            if (current.isEnabled && (current.isClickable || isGestureTapCandidate(current))) {
                 return true
             }
             current = current.parent
@@ -951,11 +1007,102 @@ object AccessibilityAgent {
         return false
     }
 
+    private fun supportsClickAction(node: AccessibilityNodeInfo): Boolean {
+        return node.isClickable || node.actionList.any { action -> action.id == AccessibilityNodeInfo.ACTION_CLICK }
+    }
+
+    private fun performGestureTapBestEffort(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth < 4) {
+            if (performGestureTap(current)) {
+                return true
+            }
+            current = current.parent
+            depth += 1
+        }
+        return false
+    }
+
+    private fun performGestureTap(node: AccessibilityNodeInfo): Boolean {
+        val service = ExamAccessibilityService.instance ?: return false
+        if (!isGestureTapCandidate(node)) {
+            return false
+        }
+        val rect = Rect().also(node::getBoundsInScreen)
+        val rootRect = rootBounds() ?: rect
+        val minX = (rootRect.left + 1).toFloat()
+        val maxX = (rootRect.right - 1).coerceAtLeast(rootRect.left + 1).toFloat()
+        val minY = (rootRect.top + 1).toFloat()
+        val maxY = (rootRect.bottom - 1).coerceAtLeast(rootRect.top + 1).toFloat()
+        val path = Path().apply {
+            moveTo(rect.exactCenterX().coerceIn(minX, maxX), rect.exactCenterY().coerceIn(minY, maxY))
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, gestureTapDurationMs))
+            .build()
+        val finished = CountDownLatch(1)
+        var completed = false
+        val dispatched = service.dispatchGesture(
+            gesture,
+            object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed = true
+                    finished.countDown()
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    finished.countDown()
+                }
+            },
+            null,
+        )
+        if (!dispatched) {
+            return false
+        }
+        finished.await(gestureTapResultWaitMs, TimeUnit.MILLISECONDS)
+        return completed
+    }
+
+    private fun isGestureTapCandidate(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isEnabled) {
+            return false
+        }
+        val rect = Rect().also(node::getBoundsInScreen)
+        val width = rect.width().coerceAtLeast(0)
+        val height = rect.height().coerceAtLeast(0)
+        if (width < minGestureTapSizePx || height < minGestureTapSizePx) {
+            return false
+        }
+        val screenArea = rootBounds()?.let { bounds ->
+            bounds.width().coerceAtLeast(0) * bounds.height().coerceAtLeast(0)
+        } ?: 0
+        val nodeArea = width * height
+        if (screenArea > 0 && nodeArea > (screenArea * maxGestureTapAreaRatio).toInt()) {
+            return false
+        }
+        val hasTextSignal = node.text?.toString()?.trim().isNullOrBlank().not() ||
+            node.contentDescription?.toString()?.trim().isNullOrBlank().not()
+        if (hasTextSignal || node.isCheckable || node.isEditable) {
+            return true
+        }
+        val className = node.className?.toString().orEmpty()
+        return className.contains("Button", ignoreCase = true) ||
+            className.contains("TextView", ignoreCase = true)
+    }
+
+    private fun rootBounds(): Rect? {
+        val root = ExamAccessibilityService.instance?.currentRoot() ?: return null
+        return Rect().also(root::getBoundsInScreen)
+    }
+
     private fun setTextValue(node: AccessibilityNodeInfo?, value: String): Boolean {
         var current = node
         while (current != null) {
             if (current.isEditable && current.isEnabled) {
-                current.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                if (!ensureInputReady(current)) {
+                    return false
+                }
                 val arguments = Bundle().apply {
                     putCharSequence(
                         AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -967,6 +1114,26 @@ object AccessibilityAgent {
             current = current.parent
         }
         return false
+    }
+
+    private fun ensureInputReady(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isEnabled || !node.isEditable) {
+            return false
+        }
+        if (node.isFocused) {
+            return true
+        }
+        if (node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
+            Thread.sleep(40)
+            if (node.isFocused) {
+                return true
+            }
+        }
+        // 学习通 WebView 富文本框经常只有真实点击后才会进入编辑态，直接 focus 不一定生效。
+        if (performGestureTapBestEffort(node)) {
+            Thread.sleep(inputActivationWaitMs)
+        }
+        return node.isFocused || node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
     }
 
     private fun writeAndVerifyInput(
@@ -1019,7 +1186,11 @@ object AccessibilityAgent {
             }
             current = current.parent
         }
-        return cleared
+        val target = node ?: return cleared
+        if (target.isFocused && tapOutsideNode(target)) {
+            Thread.sleep(inputBlurWaitMs)
+        }
+        return cleared || !target.isFocused
     }
 
     private fun isInputTextMatched(actual: String, expected: String): Boolean {
@@ -1032,14 +1203,91 @@ object AccessibilityAgent {
     }
 
     private fun normalizeInputText(value: String): String {
-        return value.replace("\\s+".toRegex(), " ").trim()
+        return InputTextNormalizer.normalize(value)
     }
 
     private fun extractNodeText(node: AccessibilityNodeInfo?): String {
         if (node == null) {
             return ""
         }
-        return node.text?.toString()?.trim().orEmpty()
+        val texts = LinkedHashSet<String>()
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth <= 2) {
+            val nodeText = normalizeInputText(current.text?.toString().orEmpty())
+            if (nodeText.isNotBlank() && !looksLikeInputPlaceholder(nodeText)) {
+                texts += nodeText
+            }
+            val nodeDesc = normalizeInputText(current.contentDescription?.toString().orEmpty())
+            if (nodeDesc.isNotBlank() && !looksLikeInputPlaceholder(nodeDesc)) {
+                texts += nodeDesc
+            }
+            current = current.parent
+            depth += 1
+        }
+        return texts.joinToString(" ").trim()
+    }
+
+    private fun looksLikeInputPlaceholder(text: String): Boolean {
+        if (text.isBlank()) {
+            return true
+        }
+        if (blankHintPattern.matches(text)) {
+            return true
+        }
+        return inputPlaceholderKeywords.any { keyword -> text.contains(keyword) }
+    }
+
+    private fun tapOutsideNode(node: AccessibilityNodeInfo): Boolean {
+        val rect = Rect().also(node::getBoundsInScreen)
+        val rootRect = rootBounds() ?: return false
+        val x = rect.centerX().coerceIn(rootRect.left + 8, rootRect.right - 8)
+        val candidates = listOf(
+            rect.top - 140,
+            rect.bottom + 140,
+            rootRect.top + 180,
+            rootRect.bottom - 180,
+        )
+        val targetY = candidates.firstOrNull { y ->
+            y in (rootRect.top + 8)..(rootRect.bottom - 8) && y !in rect.top..rect.bottom
+        } ?: return false
+        return performGestureTapAt(x.toFloat(), targetY.toFloat())
+    }
+
+    private fun performGestureTapAt(x: Float, y: Float): Boolean {
+        val service = ExamAccessibilityService.instance ?: return false
+        val rootRect = rootBounds() ?: return false
+        val minX = (rootRect.left + 1).toFloat()
+        val maxX = (rootRect.right - 1).coerceAtLeast(rootRect.left + 1).toFloat()
+        val minY = (rootRect.top + 1).toFloat()
+        val maxY = (rootRect.bottom - 1).coerceAtLeast(rootRect.top + 1).toFloat()
+        val path = Path().apply {
+            moveTo(x.coerceIn(minX, maxX), y.coerceIn(minY, maxY))
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, gestureTapDurationMs))
+            .build()
+        val finished = CountDownLatch(1)
+        var completed = false
+        val dispatched = service.dispatchGesture(
+            gesture,
+            object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed = true
+                    finished.countDown()
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    finished.countDown()
+                }
+            },
+            null,
+        )
+        if (!dispatched) {
+            return false
+        }
+        finished.await(gestureTapResultWaitMs, TimeUnit.MILLISECONDS)
+        return completed
     }
 
     private fun findToggleNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -1090,6 +1338,37 @@ object AccessibilityAgent {
         return bestNode
     }
 
+    private fun observeUiProgress(
+        beforeFingerprint: String,
+        timeoutMs: Long = actionPostCheckTimeoutMs,
+    ): UiProgressObservation {
+        val service = ExamAccessibilityService.instance
+            ?: return UiProgressObservation(false, 0L)
+        val start = SystemClock.uptimeMillis()
+        var latestFingerprint = beforeFingerprint
+
+        while (SystemClock.uptimeMillis() - start < timeoutMs) {
+            Thread.sleep(actionPostCheckPollMs)
+            latestFingerprint = captureUiFingerprint(service.currentRoot())
+            if (latestFingerprint != beforeFingerprint) {
+                return UiProgressObservation(
+                    changed = true,
+                    waitedMs = SystemClock.uptimeMillis() - start,
+                )
+            }
+
+            val quietFor = SystemClock.uptimeMillis() - ExamAccessibilityService.lastEventAtMs
+            if (quietFor >= stableWindowMs && SystemClock.uptimeMillis() - start >= actionPostCheckPollMs) {
+                break
+            }
+        }
+
+        return UiProgressObservation(
+            changed = false,
+            waitedMs = SystemClock.uptimeMillis() - start,
+        )
+    }
+
     private fun captureUiFingerprint(root: AccessibilityNodeInfo?): String {
         if (root == null) {
             return "empty"
@@ -1097,28 +1376,44 @@ object AccessibilityAgent {
 
         val rows = mutableListOf<String>()
         var nodeCount = 0
+        var semanticCount = 0
 
         fun visit(node: AccessibilityNodeInfo, depth: Int) {
-            if (nodeCount >= 120) {
+            if (nodeCount >= uiFingerprintNodeLimit) {
                 return
             }
             nodeCount += 1
             val rect = Rect().also(node::getBoundsInScreen)
-            val text = node.text?.toString()?.replace("\\s+".toRegex(), " ")?.trim().orEmpty().take(20)
-            val desc = node.contentDescription?.toString()?.replace("\\s+".toRegex(), " ")?.trim().orEmpty().take(20)
-            rows += listOf(
-                depth.toString(),
-                node.className?.toString().orEmpty(),
-                node.viewIdResourceName.orEmpty(),
-                text,
-                desc,
-                node.isChecked.toString(),
-                node.isClickable.toString(),
-                rect.left.toString(),
-                rect.top.toString(),
-                rect.right.toString(),
-                rect.bottom.toString(),
-            ).joinToString("#")
+            val text = normalizeFingerprintText(node.text)
+            val desc = normalizeFingerprintText(node.contentDescription)
+            val viewId = node.viewIdResourceName.orEmpty()
+            val hasSemanticSignal = text.isNotEmpty() ||
+                desc.isNotEmpty() ||
+                viewId.isNotEmpty() ||
+                node.isClickable ||
+                node.isCheckable ||
+                node.isEditable ||
+                node.isScrollable
+            if (hasSemanticSignal) {
+                semanticCount += 1
+                rows += listOf(
+                    depth.toString(),
+                    node.className?.toString().orEmpty(),
+                    viewId,
+                    text,
+                    desc,
+                    node.isChecked.toString(),
+                    node.isSelected.toString(),
+                    node.isEditable.toString(),
+                    node.isClickable.toString(),
+                    node.isScrollable.toString(),
+                    node.childCount.toString(),
+                    (rect.left / 6).toString(),
+                    (rect.top / 6).toString(),
+                    (rect.right / 6).toString(),
+                    (rect.bottom / 6).toString(),
+                ).joinToString("#")
+            }
 
             for (index in 0 until node.childCount) {
                 node.getChild(index)?.let { child ->
@@ -1128,10 +1423,24 @@ object AccessibilityAgent {
         }
 
         visit(root, 0)
-        val joined = rows.joinToString("|")
+        val joined = if (rows.isEmpty()) {
+            root.className?.toString().orEmpty()
+        } else {
+            rows.joinToString("|")
+        }
         val hash = joined.hashCode().toLong() and 0xffffffffL
         val packageName = root.packageName?.toString().orEmpty()
-        return "$packageName:$hash:$nodeCount"
+        return "$packageName:$hash:$nodeCount:$semanticCount"
+    }
+
+    private fun normalizeFingerprintText(value: CharSequence?): String {
+        val text = value?.toString()?.replace("\\s+".toRegex(), " ")?.trim().orEmpty()
+        if (text.length <= uiFingerprintTextLimit) {
+            return text
+        }
+        val headLength = uiFingerprintTextLimit / 2
+        val tailLength = uiFingerprintTextLimit - headLength
+        return "${text.take(headLength)}${text.takeLast(tailLength)}"
     }
 
     private fun resolveActionRisk(node: AccessibilityNodeInfo): String {
@@ -1159,12 +1468,37 @@ object AccessibilityAgent {
         }
     }
 
-    private fun currentPageType(): String {
-        return lastQuestionContext?.pageType ?: lastPageClassification?.pageType ?: "unknown_context"
+    private fun currentContextTag(): String {
+        return lastQuestionContext?.contextSignature
+            ?: lastScreenContextSummary?.contextSignature
+            ?: "unknown_context"
     }
 
-    private fun currentPageConfidence(): Double {
-        return lastQuestionContext?.pageTypeConfidence ?: lastPageClassification?.confidence ?: 0.0
+    private fun currentContextConfidence(): Double {
+        return lastQuestionContext?.structureConfidence
+            ?: lastScreenContextSummary?.confidence
+            ?: 0.0
+    }
+
+    private data class UiProgressObservation(
+        val changed: Boolean,
+        val waitedMs: Long,
+    )
+
+    private data class ScreenContextSummary(
+        val packageName: String?,
+        val contextSignature: String,
+        val confidence: Double,
+        val signals: Map<String, Double>,
+        val regionNames: List<String>,
+    ) {
+        fun toMap(): Map<String, Any?> = mapOf(
+            "packageName" to packageName,
+            "contextSignature" to contextSignature,
+            "confidence" to confidence,
+            "signals" to signals,
+            "regionNames" to regionNames,
+        )
     }
 
     private fun success(
@@ -1188,8 +1522,8 @@ object AccessibilityAgent {
         val payload = failure(message, code)
         RecognitionTraceStore.record(
             stage = tool,
-            pageType = currentPageType(),
-            confidence = currentPageConfidence(),
+            contextTag = currentContextTag(),
+            confidence = currentContextConfidence(),
             ok = false,
             message = message,
             payload = mapOf("code" to code),

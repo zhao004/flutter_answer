@@ -5,11 +5,15 @@ object QuestionExtractor {
     private val alphaOptionPattern = Regex("^([A-Ha-h])[.、:：．\\)]\\s*(.+)$")
     private val digitOptionPattern = Regex("^(\\d{1,2})[.、:：．\\)]\\s*(.+)$")
     private val chineseOptionPattern = Regex("^[（(]?([一二三四五六七八九十])[)）.、]\\s*(.+)$")
+    private val namedOptionPattern = Regex("^选项\\s*([A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])[.、:：．\\)]?\\s*(.+)$")
     private val looseOptionPrefixPattern = Regex("^([A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])\\s+(.+)$")
     private val blankPlaceholderPattern = Regex("(_{2,}|\\(\\s*\\)|（\\s*）|\\[\\s*\\]|【\\s*】|\\{\\s*\\}|<\\s*>)")
+    private val blankIndexPattern = Regex("^第\\s*(\\d{1,3})\\s*空[:：]?$")
     private val questionIndexPattern = Regex("^\\s*(?:第\\s*)?(\\d{1,4})\\s*(?:题|[.、:：\\)])")
     private val strictQuestionIndexPattern = Regex("^\\s*第\\s*\\d{1,4}\\s*题")
-    private val optionPrefixCleanupPattern = Regex("^[A-Ha-h\\d一二三四五六七八九十]+[.、:：．\\)]\\s*")
+    private val questionTypePattern = Regex("^\\s*(?:\\d+[.、]\\s*)?(单选题|多选题|判断题|填空题|简答题|问答题|论述题)$")
+    private val optionPrefixCleanupPattern = Regex("^(?:选项\\s*)?(?:[A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])[.、:：．\\)]\\s*")
+    private val inputHintKeywords = listOf("请输入答案", "请填写答案", "未作答轻点两下来编辑", "轻点两下来编辑", "点击输入", "双击输入", "点击作答")
 
     private val nextActionKeywords = listOf("下一题", "下一步", "继续", "下页", "完成")
     private val submitActionKeywords = listOf("提交", "交卷", "完成考试", "立即交卷")
@@ -37,6 +41,7 @@ object QuestionExtractor {
         val elementById = snapshot.elements.associateBy(UiElement::id)
         val questionRegionIds = regionElementIds(regions, "question")
         val optionRegionIds = regionElementIds(regions, "options")
+        val inputRegionIds = regionElementIds(regions, "input")
         val footerRegionIds = regionElementIds(regions, "footer_actions")
         val popupRegionIds = regionElementIds(regions, "popup")
 
@@ -45,6 +50,9 @@ object QuestionExtractor {
             .mapNotNull { element ->
                 val text = cleanText(element.text ?: element.desc).takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val kind = inferActionKind(text) ?: return@mapNotNull null
+                if (!looksLikeActionLabel(text)) {
+                    return@mapNotNull null
+                }
                 QuestionAction(
                     id = element.id,
                     text = text,
@@ -57,6 +65,9 @@ object QuestionExtractor {
             .mapNotNull { element ->
                 val textHint = cleanText(element.text ?: element.desc).takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val kind = inferActionKind(textHint) ?: return@mapNotNull null
+                if (!looksLikeActionLabel(textHint)) {
+                    return@mapNotNull null
+                }
                 val targetId = if (element.clickable) {
                     element.id
                 } else {
@@ -65,7 +76,7 @@ object QuestionExtractor {
                         expectedKind = kind,
                         hintText = textHint,
                         snapshot = snapshot,
-                    ) ?: return@mapNotNull null
+                    ) ?: element.id.takeIf { canUseHintElementAsActionTarget(element) } ?: return@mapNotNull null
                 }
                 QuestionAction(
                     id = targetId,
@@ -75,8 +86,11 @@ object QuestionExtractor {
                 )
             }
 
-        val actions = (actionsFromClickable + actionsFromTextHints)
-            .distinctBy { action -> "${action.id}:${action.kind}" }
+        val actions = prioritizeActions(
+            actions = (actionsFromClickable + actionsFromTextHints)
+                .distinctBy { action -> "${action.id}:${action.kind}" },
+            popupRegionIds = popupRegionIds,
+        )
 
         val optionSourceElements = resolveOptionSourceElements(
             snapshot = snapshot,
@@ -88,19 +102,11 @@ object QuestionExtractor {
             .filter { option ->
                 option.text.isNotBlank() &&
                     !isActionLikeText(option.text) &&
-                    !isNoiseQuestionText(option.text)
+                    !isNoiseOptionText(option.text)
             }
             .distinctBy { option -> "${option.id}:${option.normalizedText}" }
 
-        val inputs = snapshot.elements
-            .filter { it.editable }
-            .map {
-                InputFieldRef(
-                    id = it.id,
-                    text = cleanText(it.text).ifBlank { null },
-                    desc = cleanText(it.desc).ifBlank { null },
-                )
-            }
+        val inputs = resolveInputFields(snapshot.elements)
 
         val actionTexts = actions.map { it.text }.toSet()
         val optionTexts = options.flatMap { option ->
@@ -122,13 +128,15 @@ object QuestionExtractor {
         } else {
             textElements
         }
-        val excludedQuestionIds = optionSourceElements.map(UiElement::id).toSet() + footerRegionIds + popupRegionIds
+        val excludedQuestionIds = optionSourceElements.map(UiElement::id).toSet() + inputRegionIds + footerRegionIds + popupRegionIds
         val primaryQuestionCandidates = questionTextElements
             .map { element -> element to cleanText(element.text) }
             .filter { (_, text) ->
                 text.isNotBlank() &&
                     text !in actionTexts &&
-                    text !in optionTexts
+                    text !in optionTexts &&
+                    !isQuestionMetaText(text) &&
+                    !isInputMetaText(text)
             }
             .filter { (element, text) ->
                 if (element.id in excludedQuestionIds) {
@@ -152,7 +160,9 @@ object QuestionExtractor {
             .filter { (_, text) ->
                 text.isNotBlank() &&
                     text !in actionTexts &&
-                    text !in optionTexts
+                    text !in optionTexts &&
+                    !isQuestionMetaText(text) &&
+                    !isInputMetaText(text)
             }
             .sortedWith(
                 compareByDescending<Pair<UiElement, String>> { (element, _) ->
@@ -168,7 +178,7 @@ object QuestionExtractor {
         val cleanedQuestion = cleanupQuestionText(questionRaw)
         val normalizedQuestion = normalizeForMatching(cleanedQuestion)
         val attachments = collectAttachments(snapshot)
-        val blanks = collectBlanks(cleanedQuestion, inputs)
+        val blanks = collectBlanks(cleanedQuestion, inputs, snapshot.elements)
         val required = detectRequired(cleanedQuestion, snapshot)
 
         val hasBlankPlaceholder = containsBlankPlaceholder(cleanedQuestion)
@@ -186,34 +196,26 @@ object QuestionExtractor {
             options.isEmpty() &&
             inputs.isEmpty() &&
             cleanedQuestion.isBlank()
-        val pageType = resolveContextType(
-            submitOnlyPage = submitOnlyPage,
-            hasVoteKeyword = hasVoteKeyword,
-            hasQuestionSignals = hasQuestionSignals,
-        )
-        val pageTypeReason = resolveContextTypeReason(
-            pageType = pageType,
-            submitLikeActionCount = submitLikeActionCount,
-            hasVoteKeyword = hasVoteKeyword,
-            hasQuestionSignals = hasQuestionSignals,
-        )
-        val pageTypeConfidence = estimateContextTypeConfidence(
-            pageType = pageType,
-            question = cleanedQuestion,
-            options = options,
-            inputs = inputs,
-            actions = actions,
-        )
-        val pageScores = buildContextScores(
+        val structureSignals = buildStructureSignals(
             submitLikeActionCount = submitLikeActionCount,
             hasVoteKeyword = hasVoteKeyword,
             hasQuestionSignals = hasQuestionSignals,
             optionCount = options.size,
             inputCount = inputs.size,
+            regions = regions,
+        )
+        val structureConfidence = estimateStructureConfidence(
+            question = cleanedQuestion,
+            options = options,
+            inputs = inputs,
+            actions = actions,
+            regions = regions,
+            hasVoteKeyword = hasVoteKeyword,
+            submitOnlyPage = submitOnlyPage,
         )
 
         val confidence = estimateConfidence(
-            pageConfidence = pageTypeConfidence,
+            structureConfidence = structureConfidence,
             questionText = cleanedQuestion,
             options = options,
             inputs = inputs,
@@ -223,6 +225,13 @@ object QuestionExtractor {
             submitOnlyPage = submitOnlyPage,
         )
         val needConfirm = confidence < 0.64
+        val screenPackage = snapshot.screen["packageName"]?.toString()
+        val contextSignature = buildContextSignature(
+            screenPackage = screenPackage,
+            regions = regions,
+            actions = actions,
+            submitOnlyPage = submitOnlyPage,
+        )
 
         val fingerprint = buildFingerprint(
             normalizedQuestion = normalizedQuestion,
@@ -233,10 +242,8 @@ object QuestionExtractor {
         val cacheProbe = QuestionFingerprintCache.record(fingerprint)
 
         return QuestionContext(
-            screenPackage = snapshot.screen["packageName"]?.toString(),
-            pageType = pageType,
-            pageTypeConfidence = pageTypeConfidence,
-            pageTypeReason = pageTypeReason,
+            screenPackage = screenPackage,
+            contextSignature = contextSignature,
             questionIndex = questionIndex,
             question = cleanedQuestion,
             normalizedQuestion = normalizedQuestion,
@@ -247,11 +254,12 @@ object QuestionExtractor {
             attachments = attachments,
             required = required,
             confidence = confidence,
+            structureConfidence = structureConfidence,
             needConfirm = needConfirm,
             fingerprint = fingerprint,
             cacheProbe = cacheProbe,
             regions = regions,
-            pageScores = pageScores,
+            structureSignals = structureSignals,
         )
     }
 
@@ -279,15 +287,151 @@ object QuestionExtractor {
             }
     }
 
-    private fun collectBlanks(question: String, inputs: List<InputFieldRef>): List<QuestionBlank> {
-        val blanksFromInputs = inputs.mapIndexed { index, input ->
-            QuestionBlank(
-                index = index + 1,
-                hint = cleanText(input.desc ?: input.text).ifBlank { "第${index + 1}空" },
-            )
+    private fun resolveInputFields(elements: List<UiElement>): List<InputFieldRef> {
+        val inputNodes = sortElementsByVisualOrder(elements.filter { element -> element.editable })
+        if (inputNodes.isEmpty()) {
+            return emptyList()
         }
+        val blankLabels = resolveBlankLabels(elements)
+        val labelAssignments = assignBlankLabelsToInputs(inputNodes, blankLabels)
+        val orderedInputs = inputNodes
+            .mapIndexed { index, element ->
+                val assignedLabel = labelAssignments[element.id]
+                val defaultOrder = index + 1
+                val resolvedOrder = assignedLabel?.index ?: defaultOrder
+                val rawText = cleanText(element.text)
+                val rawDesc = cleanText(element.desc)
+                val explicitHint = assignedLabel?.hint ?: sanitizeBlankHint(rawDesc.ifBlank { rawText }, resolvedOrder)
+                InputFieldRef(
+                    id = element.id,
+                    text = rawText.ifBlank { null },
+                    desc = rawDesc.ifBlank { null },
+                    hint = explicitHint,
+                    order = resolvedOrder,
+                )
+            }
+            .sortedWith(
+                compareBy<InputFieldRef> { input -> input.order ?: Int.MAX_VALUE }
+                    .thenBy { input -> input.id },
+            )
+        return orderedInputs.mapIndexed { index, input ->
+            if (input.order != null && input.order > 0) {
+                input
+            } else {
+                input.copy(order = index + 1)
+            }
+        }
+    }
+
+    private fun resolveBlankLabels(elements: List<UiElement>): List<BlankLabelAnchor> {
+        return elements
+            .mapNotNull { element ->
+                val text = cleanText(element.text ?: element.desc)
+                val match = blankIndexPattern.matchEntire(text) ?: return@mapNotNull null
+                val index = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
+                BlankLabelAnchor(
+                    index = index,
+                    hint = "第${index}空",
+                    bounds = element.bounds,
+                )
+            }
+            .distinctBy { label -> label.index }
+            .sortedWith(
+                compareBy<BlankLabelAnchor> { label -> label.index }
+                    .thenBy { label -> label.bounds.getOrNull(1) ?: Int.MAX_VALUE }
+                    .thenBy { label -> label.bounds.getOrNull(0) ?: Int.MAX_VALUE },
+            )
+    }
+
+    private fun assignBlankLabelsToInputs(
+        inputNodes: List<UiElement>,
+        blankLabels: List<BlankLabelAnchor>,
+    ): Map<String, BlankLabelAnchor> {
+        if (inputNodes.isEmpty() || blankLabels.isEmpty()) {
+            return emptyMap()
+        }
+        val remainingInputIds = inputNodes.map(UiElement::id).toMutableSet()
+        val inputById = inputNodes.associateBy(UiElement::id)
+        val assignments = linkedMapOf<String, BlankLabelAnchor>()
+        blankLabels.forEach { label ->
+            val matchedInput = remainingInputIds
+                .mapNotNull(inputById::get)
+                .minByOrNull { input -> scoreBlankLabelToInput(label, input) }
+                ?: return@forEach
+            assignments[matchedInput.id] = label
+            remainingInputIds.remove(matchedInput.id)
+        }
+        return assignments
+    }
+
+    private fun scoreBlankLabelToInput(label: BlankLabelAnchor, input: UiElement): Int {
+        val labelLeft = label.bounds.getOrNull(0) ?: Int.MAX_VALUE
+        val labelTop = label.bounds.getOrNull(1) ?: Int.MAX_VALUE
+        val labelRight = label.bounds.getOrNull(2) ?: Int.MIN_VALUE
+        val labelBottom = label.bounds.getOrNull(3) ?: Int.MIN_VALUE
+        val inputLeft = input.bounds.getOrNull(0) ?: Int.MAX_VALUE
+        val inputTop = input.bounds.getOrNull(1) ?: Int.MAX_VALUE
+        val inputRight = input.bounds.getOrNull(2) ?: Int.MIN_VALUE
+        val inputBottom = input.bounds.getOrNull(3) ?: Int.MIN_VALUE
+        val labelCenterX = (labelLeft + labelRight) / 2
+        val labelCenterY = (labelTop + labelBottom) / 2
+        val inputCenterX = (inputLeft + inputRight) / 2
+        val inputCenterY = (inputTop + inputBottom) / 2
+        val horizontalDistance = kotlin.math.abs(labelCenterX - inputCenterX)
+        val verticalDistance = kotlin.math.abs(labelCenterY - inputCenterY)
+        val labelAboveInput = labelBottom <= inputTop + 24
+        val overlapsHorizontally = labelRight >= inputLeft - 24 && labelLeft <= inputRight + 24
+        var score = (verticalDistance * 3) + horizontalDistance
+        if (labelAboveInput) {
+            score -= 220
+        }
+        if (overlapsHorizontally) {
+            score -= 120
+        }
+        if (verticalDistance <= 220) {
+            score -= 80
+        }
+        return score
+    }
+
+    private fun sortElementsByVisualOrder(elements: List<UiElement>): List<UiElement> {
+        return elements.sortedWith(
+            compareBy<UiElement> { element -> element.bounds.getOrNull(1) ?: Int.MAX_VALUE }
+                .thenBy { element -> element.bounds.getOrNull(0) ?: Int.MAX_VALUE }
+                .thenBy(UiElement::id),
+        )
+    }
+
+    private fun collectBlanks(
+        question: String,
+        inputs: List<InputFieldRef>,
+        elements: List<UiElement>,
+    ): List<QuestionBlank> {
+        val blanksFromInputs = inputs
+            .sortedWith(
+                compareBy<InputFieldRef> { input -> input.order ?: Int.MAX_VALUE }
+                    .thenBy(InputFieldRef::id),
+            )
+            .mapIndexed { index, input ->
+                val resolvedIndex = input.order ?: index + 1
+                QuestionBlank(
+                    index = resolvedIndex,
+                    hint = input.hint ?: sanitizeBlankHint(input.desc ?: input.text, resolvedIndex),
+                    inputId = input.id,
+                )
+            }
         if (blanksFromInputs.isNotEmpty()) {
             return blanksFromInputs
+        }
+
+        val blanksFromLabels = resolveBlankLabels(elements).map { label ->
+            QuestionBlank(
+                index = label.index,
+                hint = label.hint,
+            )
+        }
+        if (blanksFromLabels.isNotEmpty()) {
+            return blanksFromLabels
         }
 
         val placeholderCount = blankPlaceholderPattern.findAll(question).count()
@@ -314,46 +458,15 @@ object QuestionExtractor {
         return true
     }
 
-    private fun resolveContextType(
-        submitOnlyPage: Boolean,
-        hasVoteKeyword: Boolean,
-        hasQuestionSignals: Boolean,
-    ): String {
-        // 直接根据可观测结构信号判定上下文，避免依赖不可控页面标签造成误导。
-        return when {
-            submitOnlyPage -> "submit_action_context"
-            hasVoteKeyword -> "vote_context"
-            hasQuestionSignals -> "question_context"
-            else -> "generic_context"
-        }
-    }
-
-    private fun resolveContextTypeReason(
-        pageType: String,
-        submitLikeActionCount: Int,
-        hasVoteKeyword: Boolean,
-        hasQuestionSignals: Boolean,
-    ): String {
-        return when (pageType) {
-            "submit_action_context" -> "检测到 $submitLikeActionCount 个提交/确认动作，且题目结构要素不足。"
-            "vote_context" -> "检测到投票关键词信号，按投票型上下文处理。"
-            "question_context" -> "检测到题干、选项或输入框等题目结构信号。"
-            else -> if (hasQuestionSignals || hasVoteKeyword) {
-                "识别到弱结构信号，暂按通用上下文处理。"
-            } else {
-                "未识别到稳定题目结构信号，按通用上下文处理。"
-            }
-        }
-    }
-
-    private fun estimateContextTypeConfidence(
-        pageType: String,
+    private fun estimateStructureConfidence(
         question: String,
         options: List<QuestionOption>,
         inputs: List<InputFieldRef>,
         actions: List<QuestionAction>,
+        regions: List<UiRegion>,
+        hasVoteKeyword: Boolean,
+        submitOnlyPage: Boolean,
     ): Double {
-        // 置信度只使用可观测结构特征，弱化不可控页面标签带来的偏差。
         var score = 0.34
         if (question.length >= 8) {
             score += 0.18
@@ -367,21 +480,31 @@ object QuestionExtractor {
         if (actions.isNotEmpty()) {
             score += 0.08
         }
-        if (pageType == "submit_action_context") {
-            score = score.coerceAtMost(0.9) + 0.04
+        if (regions.any { region -> region.region == "question" }) {
+            score += 0.08
         }
-        if (pageType == "generic_context" && question.isBlank() && options.isEmpty() && inputs.isEmpty()) {
+        if (regions.any { region -> region.region == "options" }) {
+            score += 0.06
+        }
+        if (hasVoteKeyword && options.isNotEmpty()) {
+            score += 0.04
+        }
+        if (submitOnlyPage) {
+            score -= 0.14
+        }
+        if (question.isBlank() && options.isEmpty() && inputs.isEmpty()) {
             score -= 0.18
         }
         return score.coerceIn(0.12, 0.96)
     }
 
-    private fun buildContextScores(
+    private fun buildStructureSignals(
         submitLikeActionCount: Int,
         hasVoteKeyword: Boolean,
         hasQuestionSignals: Boolean,
         optionCount: Int,
         inputCount: Int,
+        regions: List<UiRegion>,
     ): Map<String, Double> {
         return linkedMapOf(
             "submitActionSignal" to submitLikeActionCount.toDouble(),
@@ -389,11 +512,14 @@ object QuestionExtractor {
             "questionSignal" to if (hasQuestionSignals) 1.0 else 0.0,
             "optionCount" to optionCount.toDouble(),
             "inputCount" to inputCount.toDouble(),
+            "regionCount" to regions.size.toDouble(),
+            "popupSignal" to if (regions.any { it.region == "popup" }) 1.0 else 0.0,
+            "footerSignal" to if (regions.any { it.region == "footer_actions" }) 1.0 else 0.0,
         )
     }
 
     private fun estimateConfidence(
-        pageConfidence: Double,
+        structureConfidence: Double,
         questionText: String,
         options: List<QuestionOption>,
         inputs: List<InputFieldRef>,
@@ -404,7 +530,7 @@ object QuestionExtractor {
     ): Double {
         // 仅基于可观测结构估计置信度，避免主观推断偏差污染结果。
         var score = 0.22
-        score += (pageConfidence * 0.32)
+        score += (structureConfidence * 0.32)
         if (questionText.length >= 8) {
             score += 0.14
         } else if (questionText.isNotBlank()) {
@@ -431,6 +557,29 @@ object QuestionExtractor {
         return score.coerceIn(0.08, 0.98)
     }
 
+    fun buildContextSignature(
+        screenPackage: String?,
+        regions: List<UiRegion>,
+        actions: List<QuestionAction>,
+        submitOnlyPage: Boolean,
+    ): String {
+        val safePackage = screenPackage?.trim().orEmpty().ifBlank { "unknown_package" }
+        val regionPart = regions
+            .map(UiRegion::region)
+            .distinct()
+            .sorted()
+            .joinToString("+")
+            .ifBlank { "no_regions" }
+        val actionPart = actions
+            .map(QuestionAction::kind)
+            .distinct()
+            .sorted()
+            .joinToString("+")
+            .ifBlank { "no_actions" }
+        val modePart = if (submitOnlyPage) "submit_only" else "interactive"
+        return "$safePackage#$regionPart#$actionPart#$modePart"
+    }
+
     private fun extractQuestionIndex(rawQuestion: String): Int? {
         val match = questionIndexPattern.find(rawQuestion) ?: return null
         val value = match.groupValues.getOrNull(1)?.trim().orEmpty()
@@ -441,7 +590,8 @@ object QuestionExtractor {
         val unified = normalizePunctuation(cleanText(raw))
         val withoutNoise = stripQuestionNoiseSegments(unified)
         val withoutIndex = withoutNoise.replace(questionIndexPattern, "")
-        return collapseDuplicatedQuestionText(withoutIndex)
+        val withoutMetaPrefix = stripQuestionMetaPrefix(withoutIndex)
+        return collapseDuplicatedQuestionText(withoutMetaPrefix)
             .replace("^[※★☆#【】\\[\\]]+".toRegex(), "")
             .replace("\\s+".toRegex(), " ")
             .trim()
@@ -598,6 +748,7 @@ object QuestionExtractor {
             // 锚点优先选择可勾选/可点击节点，保证后续执行点击时尽量可操作。
             val anchor = sortedRow.firstOrNull { element -> element.checkable }
                 ?: sortedRow.firstOrNull { element -> element.clickable }
+                ?: sortedRow.firstOrNull { element -> cleanText(element.text ?: element.desc).isNotBlank() }
                 ?: sortedRow.first()
             output += QuestionOption(
                 id = anchor.id,
@@ -628,6 +779,17 @@ object QuestionExtractor {
         return inferActionKind(normalized) != null
     }
 
+    private fun looksLikeActionLabel(text: String): Boolean {
+        val normalized = cleanText(text)
+        if (normalized.isBlank()) {
+            return false
+        }
+        if (normalized.length > 12) {
+            return false
+        }
+        return !normalized.any { ch -> ch in listOf('，', '。', '！', '？', ',', '.', '!', '?', ';', '；') }
+    }
+
     private fun normalizePunctuation(text: String): String {
         return text
             .replace('，', ',')
@@ -644,6 +806,7 @@ object QuestionExtractor {
         val match = alphaOptionPattern.find(text)
             ?: digitOptionPattern.find(text)
             ?: chineseOptionPattern.find(text)
+            ?: namedOptionPattern.find(text)
         if (match == null) {
             return null
         }
@@ -722,7 +885,7 @@ object QuestionExtractor {
         }
         return candidates
             .asSequence()
-            .map { (_, text) -> stripQuestionNoiseSegments(cleanText(text)) }
+            .map { (_, text) -> stripQuestionMetaPrefix(stripQuestionNoiseSegments(cleanText(text))) }
             .filter { text -> text.isNotBlank() && !isNoiseQuestionText(text) }
             .distinctBy(::normalizeForQuestionDedup)
             .take(limit.coerceAtLeast(1))
@@ -734,8 +897,27 @@ object QuestionExtractor {
         if (text.isBlank()) {
             return true
         }
+        if (isQuestionMetaText(text)) {
+            return true
+        }
+        if (isInputMetaText(text)) {
+            return true
+        }
         val normalized = normalizeForQuestionDedup(text)
         if (normalized.length <= 1) {
+            return true
+        }
+        return questionNoiseKeywords.any { keyword ->
+            normalized.contains(normalizeForQuestionDedup(keyword))
+        }
+    }
+
+    private fun isNoiseOptionText(text: String): Boolean {
+        if (text.isBlank()) {
+            return true
+        }
+        val normalized = normalizeForQuestionDedup(text)
+        if (normalized.isBlank()) {
             return true
         }
         return questionNoiseKeywords.any { keyword ->
@@ -767,6 +949,18 @@ object QuestionExtractor {
         return cleaned
             .replace("\\s+".toRegex(), " ")
             .trim()
+    }
+
+    private fun stripQuestionMetaPrefix(value: String): String {
+        var cleaned = cleanText(value)
+        while (cleaned.startsWith("题干") || cleaned.startsWith("题目")) {
+            cleaned = cleaned
+                .removePrefix("题干")
+                .removePrefix("题目")
+                .trimStart(':', '：', ' ')
+                .trim()
+        }
+        return cleaned
     }
 
     private fun collapseDuplicatedQuestionText(value: String): String {
@@ -801,6 +995,26 @@ object QuestionExtractor {
         }
     }
 
+    private fun prioritizeActions(
+        actions: List<QuestionAction>,
+        popupRegionIds: Set<String>,
+    ): List<QuestionAction> {
+        if (actions.isEmpty() || popupRegionIds.isEmpty()) {
+            return actions
+        }
+        val popupKinds = actions
+            .filter { action -> action.id in popupRegionIds }
+            .map(QuestionAction::kind)
+            .toSet()
+        if (popupKinds.isEmpty()) {
+            return actions
+        }
+        // 弹窗出现时，背景层同类动作通常已不可用；优先保留弹窗动作，避免误点底部原按钮。
+        return actions.filter { action ->
+            action.kind !in popupKinds || action.id in popupRegionIds
+        }
+    }
+
     private fun resolveActionTargetId(
         hintElement: UiElement,
         expectedKind: String,
@@ -814,10 +1028,15 @@ object QuestionExtractor {
         val hintBottom = hintBounds.getOrNull(3) ?: return null
         val hintCenterX = (hintLeft + hintRight) / 2
         val hintCenterY = (hintTop + hintBottom) / 2
+        val hintArea = (hintRight - hintLeft).coerceAtLeast(0) * (hintBottom - hintTop).coerceAtLeast(0)
 
+        val screenWidth = snapshot.elements.maxOfOrNull { element ->
+            element.bounds.getOrNull(2) ?: 0
+        } ?: 0
         val screenHeight = snapshot.elements.maxOfOrNull { element ->
             element.bounds.getOrNull(3) ?: 0
         } ?: 0
+        val screenArea = screenWidth * screenHeight
 
         val candidates = snapshot.elements.filter { element ->
             element.clickable && element.enabled
@@ -835,6 +1054,7 @@ object QuestionExtractor {
             val right = bounds.getOrNull(2) ?: return@forEach
             val bottom = bounds.getOrNull(3) ?: return@forEach
             val candidateText = cleanText(candidate.text ?: candidate.desc)
+            val candidateArea = (right - left).coerceAtLeast(0) * (bottom - top).coerceAtLeast(0)
             var score = 0
 
             if (hintCenterX in left..right && hintCenterY in top..bottom) {
@@ -891,6 +1111,13 @@ object QuestionExtractor {
 
             if ((candidate.className.orEmpty()).contains("Button", ignoreCase = true)) {
                 score += 8
+            }
+
+            if (hintArea > 0 && candidateArea > hintArea * 5 && candidateText.isBlank()) {
+                score -= 36
+            }
+            if (screenArea > 0 && candidateArea > (screenArea * 0.42).toInt() && candidateText.isBlank()) {
+                score -= 80
             }
 
             if (score > bestScore) {
@@ -969,4 +1196,58 @@ object QuestionExtractor {
         val stableSpacingCount = verticalDiffs.count { diff -> diff in 6..220 }
         return hasRepeatedClass && stableSpacingCount >= 1
     }
+
+    private fun isQuestionMetaText(text: String): Boolean {
+        val normalized = cleanText(text)
+        if (normalized.isBlank()) {
+            return true
+        }
+        if (normalized == "题干" || normalized == "题目" || normalized == "问题") {
+            return true
+        }
+        return questionTypePattern.matches(normalized)
+    }
+
+    private fun isInputMetaText(text: String): Boolean {
+        val normalized = cleanText(text)
+        if (normalized.isBlank()) {
+            return true
+        }
+        if (blankIndexPattern.matches(normalized)) {
+            return true
+        }
+        return inputHintKeywords.any { keyword -> normalized.contains(keyword) }
+    }
+
+    private fun sanitizeBlankHint(rawHint: String?, index: Int): String {
+        val hint = cleanText(rawHint)
+        if (hint.isBlank() || isInputMetaText(hint)) {
+            return "第${index}空"
+        }
+        val match = blankIndexPattern.matchEntire(hint)
+        val explicitIndex = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (explicitIndex != null) {
+            return "第${explicitIndex}空"
+        }
+        return hint
+    }
+
+    private fun canUseHintElementAsActionTarget(element: UiElement): Boolean {
+        val left = element.bounds.getOrNull(0) ?: return false
+        val top = element.bounds.getOrNull(1) ?: return false
+        val right = element.bounds.getOrNull(2) ?: return false
+        val bottom = element.bounds.getOrNull(3) ?: return false
+        val width = (right - left).coerceAtLeast(0)
+        val height = (bottom - top).coerceAtLeast(0)
+        if (width < 48 || height < 48) {
+            return false
+        }
+        return cleanText(element.text ?: element.desc).isNotBlank()
+    }
+
+    private data class BlankLabelAnchor(
+        val index: Int,
+        val hint: String,
+        val bounds: List<Int>,
+    )
 }
