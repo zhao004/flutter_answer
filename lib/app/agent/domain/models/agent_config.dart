@@ -4,8 +4,7 @@ class AgentConfig {
     this.apiKey = '',
     this.model = 'gpt-5-mini',
     this.taskPrompt =
-        'Read the current question page, answer carefully, prefer tools, and stop at the submit page unless auto submit is enabled.',
-    this.autoSubmit = false,
+        'Read the current question page, answer carefully, prefer tools, and stop at the submit page for manual confirmation.',
     this.maxIterations = defaultMaxIterations,
     this.maxExecutionMinutes = defaultMaxExecutionMinutes,
     this.maxRepeatedSameToolCall = defaultMaxRepeatedSameToolCall,
@@ -29,7 +28,6 @@ class AgentConfig {
   final String apiKey;
   final String model;
   final String taskPrompt;
-  final bool autoSubmit;
   final int maxIterations;
   final int maxExecutionMinutes;
   final int maxRepeatedSameToolCall;
@@ -59,7 +57,6 @@ class AgentConfig {
     String? apiKey,
     String? model,
     String? taskPrompt,
-    bool? autoSubmit,
     int? maxIterations,
     int? maxExecutionMinutes,
     int? maxRepeatedSameToolCall,
@@ -70,7 +67,6 @@ class AgentConfig {
       apiKey: apiKey ?? this.apiKey,
       model: model ?? this.model,
       taskPrompt: taskPrompt ?? this.taskPrompt,
-      autoSubmit: autoSubmit ?? this.autoSubmit,
       maxIterations: maxIterations ?? this.maxIterations,
       maxExecutionMinutes: maxExecutionMinutes ?? this.maxExecutionMinutes,
       maxRepeatedSameToolCall:
@@ -96,7 +92,6 @@ class AgentConfig {
       'hasApiKey': hasApiKey,
       'model': sanitizedConfig.model,
       'taskPrompt': sanitizedConfig.taskPrompt,
-      'autoSubmit': sanitizedConfig.autoSubmit,
       'maxIterations': sanitizedConfig.maxIterations,
       'maxExecutionMinutes': sanitizedConfig.maxExecutionMinutes,
       'maxRepeatedSameToolCall': sanitizedConfig.maxRepeatedSameToolCall,
@@ -111,7 +106,6 @@ class AgentConfig {
       'apiKey': sanitizedConfig.apiKey,
       'model': sanitizedConfig.model,
       'taskPrompt': sanitizedConfig.taskPrompt,
-      'autoSubmit': sanitizedConfig.autoSubmit,
       'maxIterations': sanitizedConfig.maxIterations,
       'maxExecutionMinutes': sanitizedConfig.maxExecutionMinutes,
       'maxRepeatedSameToolCall': sanitizedConfig.maxRepeatedSameToolCall,
@@ -129,7 +123,6 @@ class AgentConfig {
       taskPrompt: json['taskPrompt']?.toString().trim().isNotEmpty == true
           ? json['taskPrompt'].toString()
           : const AgentConfig().taskPrompt,
-      autoSubmit: json['autoSubmit'] == true,
       maxIterations: _readInt(json['maxIterations'], defaultMaxIterations),
       maxExecutionMinutes: _readInt(
         json['maxExecutionMinutes'],

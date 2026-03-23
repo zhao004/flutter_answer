@@ -9,7 +9,6 @@ void main() {
         apiKey: 'sk-test',
         model: 'gpt-5-mini',
         taskPrompt: 'answer the page',
-        autoSubmit: true,
         maxIterations: 960,
         maxExecutionMinutes: 18,
         maxRepeatedSameToolCall: 16,
@@ -22,7 +21,6 @@ void main() {
       expect(restored.apiKey, config.apiKey);
       expect(restored.model, config.model);
       expect(restored.taskPrompt, config.taskPrompt);
-      expect(restored.autoSubmit, isTrue);
       expect(restored.maxIterations, 960);
       expect(restored.maxExecutionMinutes, 18);
       expect(restored.maxRepeatedSameToolCall, 16);

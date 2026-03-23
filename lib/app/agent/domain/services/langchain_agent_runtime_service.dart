@@ -10,6 +10,7 @@ import '../models/connectivity_probe_result.dart';
 import '../models/native_tool_definition.dart';
 import '../models/native_tool_execution.dart';
 import 'provider_url_resolver.dart';
+import 'submit_page_stop_guard.dart';
 
 typedef AgentStatusCallback = void Function(AgentRunState state);
 typedef AgentLogCallback = void Function(String level, String message);
@@ -160,6 +161,10 @@ class LangChainAgentRuntimeService {
               },
               onToolCompleted: (result, _) {
                 onToolResult(result);
+                final stopMessage = resolveSubmitPageStopMessage(result);
+                if (stopMessage != null) {
+                  throw _AgentStoppedException(stopMessage);
+                }
                 if (_isNoProgressActionResult(
                   result: result,
                   actionToolNames: actionToolNames,
@@ -272,16 +277,20 @@ class LangChainAgentRuntimeService {
       onLog('warn', error.message);
       onStatus(stalled);
       return stalled;
-    } on _AgentStoppedException {
+    } on _AgentStoppedException catch (error) {
+      final stopMessage = error.message ?? '已按操作要求停止。';
       final stopped = AgentRunState(
         running: false,
         status: 'stopped',
         step: toolStep,
-        message: '已按操作要求停止。',
+        message: stopMessage,
         lastTool: latestState.lastTool,
         lastModelText: latestState.lastModelText,
         updatedAt: DateTime.now().millisecondsSinceEpoch,
       );
+      if (error.message != null) {
+        onLog('info', stopMessage);
+      }
       onStatus(stopped);
       return stopped;
     } catch (error) {
@@ -385,10 +394,9 @@ Execution rules:
 - If action calls keep returning no UI change, stop early and report the blocker instead of brute-force retries.
 - After finishing current question input/selection, you must advance. If `next` is missing or no progress is observed, execute up to 2 rounds of: small scroll down -> `get_question_context` -> retry candidate next action.
 - Keep actions minimal and deterministic.
-- If auto submit is disabled, stop at the submit page and explain that manual confirmation is required.
-- If auto submit is enabled and `structureSignals.submitReadySignal` is 1, click `submit` to finish.
-- If auto submit is enabled and a submit confirmation dialog appears (`structureSignals.submitDialogSignal` is 1 with `confirm` or dialog `submit`, plus `cancel`), click `confirm` when present; otherwise click the dialog `submit` action once.
-- If `structureSignals.unansweredWarningSignal` is 1, do not confirm submission; stop and report that unanswered questions remain.
+- Stop immediately when `structureSignals.submitReadySignal` is 1, `structureSignals.submitDialogSignal` is 1, or `structureSignals.unansweredWarningSignal` is 1.
+- At any submit-related page or dialog, do not click `submit`, `confirm`, or similar final actions. Stop and explain that manual confirmation is required.
+- If `structureSignals.unansweredWarningSignal` is 1, clearly report that unanswered questions remain.
 - Do not fabricate UI state. If you are unsure, call a tool.
 - Runtime guardrails: max ${limits.maxIterations} executor iterations, ${limits.maxExecutionTime.inMinutes} minutes, repeated same tool limit ${limits.maxRepeatedSameToolCall}, no-progress action streak limit ${limits.maxNoProgressActionStreak}.
 
@@ -397,9 +405,6 @@ $toolNames
 
 Task:
 ${config.taskPrompt}
-
-Auto submit:
-${config.autoSubmit ? 'enabled' : 'disabled'}
 ''';
   }
 
@@ -575,7 +580,9 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
 }
 
 class _AgentStoppedException implements Exception {
-  const _AgentStoppedException();
+  const _AgentStoppedException([this.message]);
+
+  final String? message;
 }
 
 class _AgentStalledException implements Exception {

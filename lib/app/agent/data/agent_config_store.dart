@@ -11,7 +11,7 @@ class AgentConfigStore {
   static const String _apiKeyKey = 'agent.apiKey';
   static const String _modelKey = 'agent.model';
   static const String _taskPromptKey = 'agent.taskPrompt';
-  static const String _autoSubmitKey = 'agent.autoSubmit';
+  static const String _legacyAutoSubmitKey = 'agent.autoSubmit';
   static const String _maxIterationsKey = 'agent.maxIterations';
   static const String _maxExecutionMinutesKey = 'agent.maxExecutionMinutes';
   static const String _maxRepeatedSameToolCallKey =
@@ -26,7 +26,6 @@ class AgentConfigStore {
         prefs.containsKey(_apiKeyKey) ||
         prefs.containsKey(_modelKey) ||
         prefs.containsKey(_taskPromptKey) ||
-        prefs.containsKey(_autoSubmitKey) ||
         prefs.containsKey(_maxIterationsKey) ||
         prefs.containsKey(_maxExecutionMinutesKey) ||
         prefs.containsKey(_maxRepeatedSameToolCallKey) ||
@@ -40,7 +39,6 @@ class AgentConfigStore {
       'apiKey': prefs.getString(_apiKeyKey) ?? '',
       'model': prefs.getString(_modelKey) ?? 'gpt-5-mini',
       'taskPrompt': prefs.getString(_taskPromptKey) ?? '',
-      'autoSubmit': prefs.getBool(_autoSubmitKey) ?? false,
       'maxIterations':
           prefs.getInt(_maxIterationsKey) ?? AgentConfig.defaultMaxIterations,
       'maxExecutionMinutes':
@@ -62,7 +60,7 @@ class AgentConfigStore {
     await prefs.setString(_apiKeyKey, config.apiKey);
     await prefs.setString(_modelKey, sanitizedConfig.model);
     await prefs.setString(_taskPromptKey, sanitizedConfig.taskPrompt);
-    await prefs.setBool(_autoSubmitKey, sanitizedConfig.autoSubmit);
+    await prefs.remove(_legacyAutoSubmitKey);
     await prefs.setInt(_maxIterationsKey, sanitizedConfig.maxIterations);
     await prefs.setInt(
       _maxExecutionMinutesKey,

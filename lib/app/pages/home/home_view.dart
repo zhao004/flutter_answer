@@ -160,17 +160,6 @@ class _AccessCard extends StatelessWidget {
                       enabled: !isBusy,
                       onChanged: controller.toggleOverlayVisibility,
                     ),
-                    const Divider(height: 1),
-                    _ToggleListTile(
-                      icon: Icons.animation_outlined,
-                      title: '拖动帧率节流',
-                      subtitle: controller.overlayDragFrameThrottleEnabled.value
-                          ? '已开启（16ms），低端机更稳'
-                          : '已关闭，拖动响应更直接',
-                      value: controller.overlayDragFrameThrottleEnabled.value,
-                      enabled: !isBusy,
-                      onChanged: controller.toggleOverlayDragFrameThrottle,
-                    ),
                   ],
                 ),
               ),
@@ -271,12 +260,9 @@ class _AgentConfigCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
-              SwitchListTile.adaptive(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('允许自动提交'),
-                subtitle: const Text('关闭后，代理到提交页会停止，不会自动点击提交。'),
-                value: controller.autoSubmit.value,
-                onChanged: (value) => controller.autoSubmit.value = value,
+              Text(
+                '代理到提交页后会自动停止，需人工确认是否提交。',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
               Wrap(

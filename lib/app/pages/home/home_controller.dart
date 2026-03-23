@@ -53,8 +53,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     text: AgentConfig.defaultMaxNoProgressActionStreak.toString(),
   );
 
-  final autoSubmit = false.obs;
-  final overlayDragFrameThrottleEnabled = true.obs;
   final overlayPermissionGranted = false.obs;
   final overlayActive = false.obs;
   final isBusy = false.obs;
@@ -68,7 +66,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   bool _systemSettingsFlowActive = false;
   String _overlayWindowMode = 'expanded';
   OverlayPosition _overlayWindowPosition = const OverlayPosition(12, 120);
-  static const int _overlayDragFrameThrottleIntervalMs = 16;
   String? _lastLogLine;
   int? _lastLogAtMs;
 
@@ -244,7 +241,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
           ? 'gpt-5-mini'
           : modelController.text.trim(),
       taskPrompt: const AgentConfig().taskPrompt,
-      autoSubmit: autoSubmit.value,
       maxIterations: _readConfigInt(
         controller: maxIterationsController,
         fallback: AgentConfig.defaultMaxIterations,
@@ -450,15 +446,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  Future<void> toggleOverlayDragFrameThrottle(bool enabled) async {
-    if (overlayDragFrameThrottleEnabled.value == enabled) {
-      return;
-    }
-    overlayDragFrameThrottleEnabled.value = enabled;
-    _appendLog('info', enabled ? '已开启悬浮窗拖动帧率节流（16ms）。' : '已关闭悬浮窗拖动帧率节流。');
-    await _pushOverlayState();
-  }
-
   void _handleNativeEvent(NativePlatformEvent event) {
     if (event.type == 'log') {
       _appendLog(
@@ -648,8 +635,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       'width': geometry.width,
       'height': geometry.height,
       'active': overlayActive.value,
-      'dragFrameThrottleEnabled': overlayDragFrameThrottleEnabled.value,
-      'dragFrameThrottleIntervalMs': _overlayDragFrameThrottleIntervalMs,
     };
   }
 
@@ -754,7 +739,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     providerUrlController.text = payload['providerUrl']?.toString() ?? '';
     modelController.text = payload['model']?.toString() ?? modelController.text;
     apiKeyController.text = _currentConfig.apiKey;
-    autoSubmit.value = payload['autoSubmit'] == true;
     maxIterationsController.text =
         payload['maxIterations']?.toString() ??
         AgentConfig.defaultMaxIterations.toString();

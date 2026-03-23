@@ -85,11 +85,7 @@ class _OverlayViewState extends State<OverlayView> {
   Offset _dragDelta = Offset.zero;
   OverlayPosition? _pendingOverlayPosition;
   bool _overlayMoveInFlight = false;
-  bool _dragFrameThrottleEnabled = true;
-  int _dragFrameThrottleIntervalMs = 16;
-  Timer? _overlayMoveThrottleTimer;
   Timer? _nativeCollapsedSyncTimer;
-  int _lastOverlayMoveAtMs = 0;
   bool _expandedMoveHandleDragging = false;
   int _expandedNativeDragSessionId = 0;
   OverlayPosition? _nativeCollapsedTouchStartPosition;
@@ -117,7 +113,6 @@ class _OverlayViewState extends State<OverlayView> {
   void dispose() {
     _overlaySubscription?.cancel();
     _overlayPortSubscription?.cancel();
-    _overlayMoveThrottleTimer?.cancel();
     _nativeCollapsedSyncTimer?.cancel();
     _overlayReceivePort.close();
     IsolateNameServer.removePortNameMapping(
@@ -702,9 +697,7 @@ class _OverlayViewState extends State<OverlayView> {
     if (_dragSessionMode != _OverlayMode.collapsed) {
       return;
     }
-    _overlayMoveThrottleTimer?.cancel();
-    _overlayMoveThrottleTimer = null;
-    await _flushOverlayMoveQueue(forceImmediate: true);
+    await _flushOverlayMoveQueue();
     final dimensions = _dimensionsFor(_OverlayMode.collapsed);
     final screen = _logicalScreenSize();
     final targetX =
@@ -808,8 +801,6 @@ class _OverlayViewState extends State<OverlayView> {
     _dragStartPosition = _overlayPosition;
     _dragDelta = Offset.zero;
     _pendingOverlayPosition = null;
-    _overlayMoveThrottleTimer?.cancel();
-    _overlayMoveThrottleTimer = null;
   }
 
   void _updateDragDelta(
@@ -836,33 +827,10 @@ class _OverlayViewState extends State<OverlayView> {
     // 统一拖动提交队列，避免高频手势并发 moveOverlay 造成闪动与跳帧。
     _overlayPosition = target;
     _pendingOverlayPosition = target;
-    _scheduleOverlayMoveFlush();
+    unawaited(_flushOverlayMoveQueue());
   }
 
-  void _scheduleOverlayMoveFlush() {
-    if (_overlayMoveInFlight) {
-      return;
-    }
-    if (!_dragFrameThrottleEnabled) {
-      unawaited(_flushOverlayMoveQueue(forceImmediate: true));
-      return;
-    }
-    if (_overlayMoveThrottleTimer?.isActive == true) {
-      return;
-    }
-    final throttleIntervalMs = _effectiveDragThrottleIntervalMs();
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final elapsed = now - _lastOverlayMoveAtMs;
-    final delayMs = (elapsed >= throttleIntervalMs)
-        ? 0
-        : (throttleIntervalMs - elapsed);
-    _overlayMoveThrottleTimer = Timer(Duration(milliseconds: delayMs), () {
-      _overlayMoveThrottleTimer = null;
-      unawaited(_flushOverlayMoveQueue());
-    });
-  }
-
-  Future<void> _flushOverlayMoveQueue({bool forceImmediate = false}) async {
+  Future<void> _flushOverlayMoveQueue() async {
     if (_overlayMoveInFlight) {
       return;
     }
@@ -870,21 +838,11 @@ class _OverlayViewState extends State<OverlayView> {
     if (target == null) {
       return;
     }
-    if (!forceImmediate && _dragFrameThrottleEnabled) {
-      final throttleIntervalMs = _effectiveDragThrottleIntervalMs();
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final elapsed = now - _lastOverlayMoveAtMs;
-      if (elapsed < throttleIntervalMs) {
-        _scheduleOverlayMoveFlush();
-        return;
-      }
-    }
 
     _overlayMoveInFlight = true;
     _pendingOverlayPosition = null;
     try {
       await FlutterOverlayWindow.moveOverlay(target);
-      _lastOverlayMoveAtMs = DateTime.now().millisecondsSinceEpoch;
     } catch (error) {
       if (!mounted) {
         return;
@@ -897,7 +855,7 @@ class _OverlayViewState extends State<OverlayView> {
       _overlayMoveInFlight = false;
     }
     if (_pendingOverlayPosition != null) {
-      _scheduleOverlayMoveFlush();
+      unawaited(_flushOverlayMoveQueue());
     }
   }
 
@@ -924,8 +882,6 @@ class _OverlayViewState extends State<OverlayView> {
     _dragDelta = Offset.zero;
     _dragSessionMode = null;
     _pendingOverlayPosition = null;
-    _overlayMoveThrottleTimer?.cancel();
-    _overlayMoveThrottleTimer = null;
   }
 
   bool _isPositionClose(OverlayPosition a, OverlayPosition b) {
@@ -939,13 +895,6 @@ class _OverlayViewState extends State<OverlayView> {
       return _expandedDragStepThreshold;
     }
     return _positionEpsilon;
-  }
-
-  int _effectiveDragThrottleIntervalMs() {
-    if (_dragSessionMode == _OverlayMode.expanded) {
-      return math.max(_dragFrameThrottleIntervalMs, 32);
-    }
-    return _dragFrameThrottleIntervalMs;
   }
 
   bool _didMoveEnough(
@@ -1151,23 +1100,6 @@ class _OverlayViewState extends State<OverlayView> {
         _pendingOverlayPosition == null) {
       _overlayPosition = OverlayPosition(x, y);
     }
-
-    final throttleEnabled = _readBool(state['dragFrameThrottleEnabled']);
-    if (throttleEnabled != null) {
-      final changed = _dragFrameThrottleEnabled != throttleEnabled;
-      _dragFrameThrottleEnabled = throttleEnabled;
-      if (changed && !_dragFrameThrottleEnabled) {
-        // 关闭节流后立即消费待移动位置，避免仍被旧定时器延后造成拖动迟滞。
-        _overlayMoveThrottleTimer?.cancel();
-        _overlayMoveThrottleTimer = null;
-        unawaited(_flushOverlayMoveQueue(forceImmediate: true));
-      }
-    }
-    final throttleIntervalMs = _readInt(state['dragFrameThrottleIntervalMs']);
-    if (throttleIntervalMs != null) {
-      // 16ms 约等于 60fps，这里限定上下界避免异常值导致拖动行为失控。
-      _dragFrameThrottleIntervalMs = throttleIntervalMs.clamp(8, 64).toInt();
-    }
   }
 
   void _appendOverlayLog(String line) {
@@ -1229,30 +1161,6 @@ class _OverlayViewState extends State<OverlayView> {
       return value.toDouble();
     }
     return double.tryParse(value?.toString() ?? '');
-  }
-
-  int? _readInt(dynamic value) {
-    if (value is int) {
-      return value;
-    }
-    if (value is num) {
-      return value.toInt();
-    }
-    return int.tryParse(value?.toString() ?? '');
-  }
-
-  bool? _readBool(dynamic value) {
-    if (value is bool) {
-      return value;
-    }
-    final normalized = value?.toString().trim().toLowerCase();
-    if (normalized == 'true') {
-      return true;
-    }
-    if (normalized == 'false') {
-      return false;
-    }
-    return null;
   }
 
   bool _hasTimePrefix(String line) {
