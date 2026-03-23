@@ -95,6 +95,62 @@ class QuestionExtractorChaoxingCoverageTest {
         assertEquals("action:next", nextAction?.id)
     }
 
+    @Test
+    fun `extract resume page marks continue answer as next without waiting confirm`() {
+        val context = QuestionExtractor.extract(resumeEntrySnapshot())
+
+        val nextAction = context.actions.firstOrNull { action -> action.kind == "next" }
+        assertTrue(nextAction != null)
+        assertEquals("continueAnswerButton", nextAction?.id)
+        assertEquals("", context.question)
+        assertFalse(context.needConfirm)
+        assertEquals(1.0, context.structureSignals["resumeEntrySignal"])
+    }
+
+    @Test
+    fun `extract resume page uses semantic next when continue text node is non clickable`() {
+        val context = QuestionExtractor.extract(resumeEntryZeroHeightActionSnapshot())
+
+        val nextAction = context.actions.firstOrNull { action -> action.kind == "next" }
+        assertTrue(nextAction != null)
+        assertEquals("action:next", nextAction?.id)
+    }
+
+    @Test
+    fun `extract submit ready page on final answered question enables submit signal`() {
+        val context = QuestionExtractor.extract(finalSubmitReadySnapshot())
+
+        val submitAction = context.actions.firstOrNull { action -> action.kind == "submit" }
+        assertTrue(submitAction != null)
+        assertEquals("submitButton", submitAction?.id)
+        assertTrue(context.options.any { option -> option.label == "A" && option.text == "对" && option.checked })
+        assertEquals(1.0, context.structureSignals["finalQuestionSignal"])
+        assertEquals(1.0, context.structureSignals["answeredSignal"])
+        assertEquals(1.0, context.structureSignals["submitReadySignal"])
+        assertFalse(context.needConfirm)
+    }
+
+    @Test
+    fun `extract submit confirm dialog without warning marks dialog signal`() {
+        val context = QuestionExtractor.extract(submitConfirmDialogSnapshot())
+
+        assertEquals("", context.question)
+        assertTrue(context.actions.any { action -> action.kind == "submit" || action.kind == "confirm" })
+        assertTrue(context.actions.any { action -> action.kind == "cancel" })
+        assertEquals(1.0, context.structureSignals["submitDialogSignal"])
+        assertEquals(0.0, context.structureSignals["unansweredWarningSignal"])
+        assertFalse(context.needConfirm)
+    }
+
+    @Test
+    fun `extract submit confirm dialog with unanswered warning blocks auto confirm signal`() {
+        val context = QuestionExtractor.extract(submitConfirmDialogWithWarningSnapshot())
+
+        assertEquals(1.0, context.structureSignals["unansweredWarningSignal"])
+        assertEquals(0.0, context.structureSignals["submitDialogSignal"])
+        assertTrue(context.needConfirm)
+    }
+
     private fun multiSelectSnapshot(): UiSnapshot {
         return chaoxingSnapshot(
             listOf(
@@ -657,6 +713,170 @@ class QuestionExtractorChaoxingCoverageTest {
                     text = "下一题",
                     className = "android.view.View",
                     bounds = listOf(918, 3032, 1327, 3032),
+                ),
+            ),
+        )
+    }
+
+    private fun resumeEntrySnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "startTime",
+                    text = "开始时间03月23日11时01分00秒",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 340, 1406, 415),
+                ),
+                element(
+                    id = "endTime",
+                    text = "截止时间07月23日12时01分00秒",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 415, 1406, 493),
+                ),
+                element(
+                    id = "summary",
+                    text = "共包含5道题目，其中单选题1道，多选题1道，填空题1道，判断题1道，简答题1道。",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 523, 1406, 700),
+                ),
+                element(
+                    id = "continueAnswerButton",
+                    text = "继续答题",
+                    className = "android.widget.Button",
+                    clickable = true,
+                    bounds = listOf(33, 913, 1406, 1067),
+                ),
+            ),
+        )
+    }
+
+    private fun resumeEntryZeroHeightActionSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "startTime",
+                    text = "开始时间03月23日11时01分00秒",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 340, 1406, 415),
+                ),
+                element(
+                    id = "endTime",
+                    text = "截止时间07月23日12时01分00秒",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 415, 1406, 493),
+                ),
+                element(
+                    id = "summary",
+                    text = "共包含5道题目，其中单选题1道，多选题1道，填空题1道，判断题1道，简答题1道。",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 523, 1406, 700),
+                ),
+                element(
+                    id = "continueAnswerText",
+                    text = "继续答题",
+                    className = "android.widget.TextView",
+                    bounds = listOf(33, 990, 1406, 990),
+                ),
+            ),
+        )
+    }
+
+    private fun finalSubmitReadySnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "questionType",
+                    text = "5. 判断题",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 280, 1383, 512),
+                ),
+                element(
+                    id = "questionLabel",
+                    text = "题干",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 508, 1383, 745),
+                ),
+                element(
+                    id = "questionText",
+                    text = "flutter是Google推出的跨平台开发框架。",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 538, 1222, 617),
+                ),
+                element(
+                    id = "optionA",
+                    text = "A.对已选择",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 745, 191, 880),
+                ),
+                element(
+                    id = "optionB",
+                    text = "B.错",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 973, 191, 1108),
+                ),
+                element(
+                    id = "answerCard",
+                    text = "答题卡 共5题 第5题",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(517, 1258, 922, 1457),
+                ),
+                element(
+                    id = "submitButton",
+                    text = "提交",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(918, 1258, 1327, 1457),
+                ),
+            ),
+        )
+    }
+
+    private fun submitConfirmDialogSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "submitDialogText",
+                    text = "确认提交后将无法修改，是否提交？",
+                    className = "android.widget.TextView",
+                    bounds = listOf(260, 940, 1180, 1180),
+                ),
+                element(
+                    id = "dialogConfirm",
+                    text = "确认提交",
+                    className = "android.widget.TextView",
+                    bounds = listOf(782, 1250, 1080, 1350),
+                ),
+                element(
+                    id = "dialogCancel",
+                    text = "取消",
+                    className = "android.widget.TextView",
+                    bounds = listOf(350, 1250, 650, 1350),
+                ),
+            ),
+        )
+    }
+
+    private fun submitConfirmDialogWithWarningSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "warningText",
+                    text = "你还有1道题未作答，确定提交吗？",
+                    className = "android.widget.TextView",
+                    bounds = listOf(260, 940, 1180, 1180),
+                ),
+                element(
+                    id = "dialogConfirm",
+                    text = "确认提交",
+                    className = "android.widget.TextView",
+                    bounds = listOf(782, 1250, 1080, 1350),
+                ),
+                element(
+                    id = "dialogCancel",
+                    text = "取消",
+                    className = "android.widget.TextView",
+                    bounds = listOf(350, 1250, 650, 1350),
                 ),
             ),
         )

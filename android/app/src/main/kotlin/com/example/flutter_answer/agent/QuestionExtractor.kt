@@ -2,6 +2,12 @@ package com.example.flutter_answer.agent
 
 object QuestionExtractor {
 
+    private const val resumeEntryStructureConfidence = 0.72
+    private const val resumeEntryConfidence = 0.76
+    private const val submitReadyStructureConfidence = 0.74
+    private const val submitReadyConfidence = 0.82
+    private const val submitDialogStructureConfidence = 0.7
+    private const val submitDialogConfidence = 0.78
     private val alphaOptionPattern = Regex("^([A-Ha-h])[.、:：．\\)]\\s*(.+)$")
     private val digitOptionPattern = Regex("^(\\d{1,2})[.、:：．\\)]\\s*(.+)$")
     private val chineseOptionPattern = Regex("^[（(]?([一二三四五六七八九十])[)）.、]\\s*(.+)$")
@@ -13,9 +19,18 @@ object QuestionExtractor {
     private val strictQuestionIndexPattern = Regex("^\\s*第\\s*\\d{1,4}\\s*题")
     private val questionTypePattern = Regex("^\\s*(?:\\d+[.、]\\s*)?(单选题|多选题|判断题|填空题|简答题|问答题|论述题)$")
     private val optionPrefixCleanupPattern = Regex("^(?:选项\\s*)?(?:[A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])[.、:：．\\)]\\s*")
+    private val optionSelectedSuffixPattern = Regex("(?:[（(\\[]?\\s*)?(?:已选择|已选中|当前选择|已勾选|已作答)(?:\\s*[）)\\]]?)$")
     private val inputHintKeywords = listOf("请输入答案", "请填写答案", "未作答轻点两下来编辑", "轻点两下来编辑", "点击输入", "双击输入", "点击作答")
+    private val optionSelectedKeywords = listOf("已选择", "已选中", "当前选择", "已勾选", "已作答")
 
-    private val nextActionKeywords = listOf("下一题", "下一步", "继续", "下页", "完成")
+    private val nextActionKeywords = listOf("下一题", "下一步", "继续", "继续答题", "继续作答", "开始答题", "去答题", "进入答题", "下页", "完成")
+    private val resumeEntryActionKeywords = listOf("继续答题", "继续作答", "开始答题", "去答题", "进入答题")
+    private val resumePageMetaKeywords = listOf("开始时间", "截止时间", "共包含", "道题目", "题目数量")
+    private val submitDialogKeywords = listOf("提交", "交卷", "确认提交", "确定提交", "是否提交", "提交后")
+    private val unansweredWarningKeywords = listOf("未作答", "未答题", "漏答", "未完成", "未填写", "尚未作答", "空题")
+    private val progressTotalCurrentPattern = Regex("共\\s*(\\d{1,4})\\s*题[^\\d]{0,10}第\\s*(\\d{1,4})\\s*题")
+    private val progressCurrentTotalPattern = Regex("第\\s*(\\d{1,4})\\s*题[^\\d]{0,10}共\\s*(\\d{1,4})\\s*题")
+    private val progressSlashPattern = Regex("(?<!\\d)(\\d{1,4})\\s*/\\s*(\\d{1,4})(?!\\d)")
     private val submitActionKeywords = listOf("提交", "交卷", "完成考试", "立即交卷")
     private val confirmActionKeywords = listOf("确认", "确定", "继续提交", "确认提交", "确定提交")
     private val cancelActionKeywords = listOf("取消", "返回", "再想想")
@@ -180,8 +195,33 @@ object QuestionExtractor {
         val questionRaw = mergeQuestionCandidates(primaryQuestionCandidates, limit = 3)
             .ifBlank { mergeQuestionCandidates(fallbackQuestionCandidates, limit = 1) }
 
-        val questionIndex = extractQuestionIndex(questionRaw)
-        val cleanedQuestion = cleanupQuestionText(questionRaw)
+        val rawQuestionIndex = extractQuestionIndex(questionRaw)
+        val rawCleanedQuestion = cleanupQuestionText(questionRaw)
+        val resumeEntryPage = isResumeEntryPage(
+            actions = actions,
+            options = options,
+            inputs = inputs,
+            snapshot = snapshot,
+        )
+        val progress = extractQuestionProgress(snapshot)
+        val finalQuestion = isFinalQuestion(rawQuestionIndex, progress)
+        val currentAnswered = isCurrentQuestionAnswered(options, inputs)
+        val unansweredWarning = hasUnansweredWarning(snapshot)
+        val submitReadyPage = isSubmitReadyPage(
+            actions = actions,
+            finalQuestion = finalQuestion,
+            currentAnswered = currentAnswered,
+            unansweredWarning = unansweredWarning,
+        )
+        val submitDialogPage = isSubmitDialogPage(
+            actions = actions,
+            options = options,
+            inputs = inputs,
+            snapshot = snapshot,
+            unansweredWarning = unansweredWarning,
+        )
+        val questionIndex = if (resumeEntryPage || submitDialogPage) null else rawQuestionIndex
+        val cleanedQuestion = if (resumeEntryPage || submitDialogPage) "" else rawCleanedQuestion
         val normalizedQuestion = normalizeForMatching(cleanedQuestion)
         val attachments = collectAttachments(snapshot)
         val blanks = collectBlanks(cleanedQuestion, inputs, snapshot.elements)
@@ -209,6 +249,13 @@ object QuestionExtractor {
             optionCount = options.size,
             inputCount = inputs.size,
             regions = regions,
+            resumeEntryPage = resumeEntryPage,
+            finalQuestion = finalQuestion,
+            currentAnswered = currentAnswered,
+            submitReadyPage = submitReadyPage,
+            submitDialogPage = submitDialogPage,
+            unansweredWarning = unansweredWarning,
+            progress = progress,
         )
         val structureConfidence = estimateStructureConfidence(
             question = cleanedQuestion,
@@ -218,6 +265,9 @@ object QuestionExtractor {
             regions = regions,
             hasVoteKeyword = hasVoteKeyword,
             submitOnlyPage = submitOnlyPage,
+            resumeEntryPage = resumeEntryPage,
+            submitReadyPage = submitReadyPage,
+            submitDialogPage = submitDialogPage,
         )
 
         val confidence = estimateConfidence(
@@ -229,8 +279,11 @@ object QuestionExtractor {
             actions = actions,
             hasVoteKeyword = hasVoteKeyword,
             submitOnlyPage = submitOnlyPage,
+            resumeEntryPage = resumeEntryPage,
+            submitReadyPage = submitReadyPage,
+            submitDialogPage = submitDialogPage,
         )
-        val needConfirm = confidence < 0.64
+        val needConfirm = !resumeEntryPage && !submitReadyPage && !submitDialogPage && confidence < 0.64
         val screenPackage = snapshot.screen["packageName"]?.toString()
         val contextSignature = buildContextSignature(
             screenPackage = screenPackage,
@@ -472,7 +525,22 @@ object QuestionExtractor {
         regions: List<UiRegion>,
         hasVoteKeyword: Boolean,
         submitOnlyPage: Boolean,
+        resumeEntryPage: Boolean,
+        submitReadyPage: Boolean,
+        submitDialogPage: Boolean,
     ): Double {
+        if (resumeEntryPage) {
+            // “继续答题”入口页虽然没有题目结构，但属于可安全推进页面，显式抬高结构置信度避免停滞。
+            return resumeEntryStructureConfidence
+        }
+        if (submitReadyPage) {
+            // 最后一题且满足提交条件时，结构目标明确，提升置信度帮助自动提交流程收敛。
+            return submitReadyStructureConfidence
+        }
+        if (submitDialogPage) {
+            // 提交确认弹窗属于高风险动作页，给中高置信度避免反复确认造成卡住。
+            return submitDialogStructureConfidence
+        }
         var score = 0.34
         if (question.length >= 8) {
             score += 0.18
@@ -511,6 +579,13 @@ object QuestionExtractor {
         optionCount: Int,
         inputCount: Int,
         regions: List<UiRegion>,
+        resumeEntryPage: Boolean,
+        finalQuestion: Boolean,
+        currentAnswered: Boolean,
+        submitReadyPage: Boolean,
+        submitDialogPage: Boolean,
+        unansweredWarning: Boolean,
+        progress: QuestionProgress?,
     ): Map<String, Double> {
         return linkedMapOf(
             "submitActionSignal" to submitLikeActionCount.toDouble(),
@@ -521,6 +596,14 @@ object QuestionExtractor {
             "regionCount" to regions.size.toDouble(),
             "popupSignal" to if (regions.any { it.region == "popup" }) 1.0 else 0.0,
             "footerSignal" to if (regions.any { it.region == "footer_actions" }) 1.0 else 0.0,
+            "resumeEntrySignal" to if (resumeEntryPage) 1.0 else 0.0,
+            "finalQuestionSignal" to if (finalQuestion) 1.0 else 0.0,
+            "answeredSignal" to if (currentAnswered) 1.0 else 0.0,
+            "submitReadySignal" to if (submitReadyPage) 1.0 else 0.0,
+            "submitDialogSignal" to if (submitDialogPage) 1.0 else 0.0,
+            "unansweredWarningSignal" to if (unansweredWarning) 1.0 else 0.0,
+            "progressCurrent" to (progress?.current?.toDouble() ?: 0.0),
+            "progressTotal" to (progress?.total?.toDouble() ?: 0.0),
         )
     }
 
@@ -533,7 +616,22 @@ object QuestionExtractor {
         actions: List<QuestionAction>,
         hasVoteKeyword: Boolean,
         submitOnlyPage: Boolean,
+        resumeEntryPage: Boolean,
+        submitReadyPage: Boolean,
+        submitDialogPage: Boolean,
     ): Double {
+        if (resumeEntryPage) {
+            // 入口页动作目标明确且风险可控，直接给到可执行置信度，减少 Agent 在入口页反复确认。
+            return resumeEntryConfidence
+        }
+        if (submitReadyPage) {
+            // 末题提交流程命中后，提升置信度避免 Agent 在“提交”动作前犹豫。
+            return submitReadyConfidence
+        }
+        if (submitDialogPage) {
+            // 提交确认弹窗需要快速完成闭环，避免低置信度造成重复读取。
+            return submitDialogConfidence
+        }
         // 仅基于可观测结构估计置信度，避免主观推断偏差污染结果。
         var score = 0.22
         score += (structureConfidence * 0.32)
@@ -608,6 +706,8 @@ object QuestionExtractor {
             cleanText(text)
                 .replace(optionPrefixCleanupPattern, ""),
         )
+            .replace(optionSelectedSuffixPattern, "")
+            .trim()
     }
 
     private fun normalizeOptionLabel(label: String): String {
@@ -760,11 +860,20 @@ object QuestionExtractor {
                 id = anchor.id,
                 label = label,
                 text = optionText,
-                checked = sortedRow.any { element -> element.checked },
+                checked = isOptionMarkedSelected(rowTexts, sortedRow),
                 normalizedText = normalizeForMatching(optionText),
             )
         }
         return output
+    }
+
+    private fun isOptionMarkedSelected(rowTexts: List<String>, rowElements: List<UiElement>): Boolean {
+        if (rowElements.any { element -> element.checked }) {
+            return true
+        }
+        return rowTexts.any { text ->
+            optionSelectedKeywords.any { keyword -> text.contains(keyword) }
+        }
     }
 
     private fun matchLooseOptionText(text: String): Pair<String, String>? {
@@ -1269,12 +1378,177 @@ object QuestionExtractor {
         }
         val isFooterLike = top >= (screenHeight * 0.55).toInt() || bottom >= (screenHeight * 0.6).toInt()
         val isPopupLike = kind == "confirm" || kind == "cancel"
-        if (!isFooterLike && !isPopupLike) {
+        val hintText = cleanText(hintElement.text ?: hintElement.desc)
+        val isResumeEntryAction = kind == "next" && resumeEntryActionKeywords.any { keyword ->
+            hintText.contains(keyword)
+        }
+        if (!isFooterLike && !isPopupLike && !isResumeEntryAction) {
             return null
         }
-        // 当底部动作文本节点退化为不可点击/零高度时，输出语义动作 id，交给原生层按动作语义兜底定位。
+        // 当底部动作或“继续答题”入口节点退化为不可点击/零高度时，输出语义动作 id，交给原生层按语义兜底定位。
         return "action:$kind"
     }
+
+    private fun isResumeEntryPage(
+        actions: List<QuestionAction>,
+        options: List<QuestionOption>,
+        inputs: List<InputFieldRef>,
+        snapshot: UiSnapshot,
+    ): Boolean {
+        if (options.isNotEmpty() || inputs.isNotEmpty()) {
+            return false
+        }
+        val hasResumeAction = actions.any { action ->
+            action.kind == "next" && resumeEntryActionKeywords.any { keyword -> action.text.contains(keyword) }
+        }
+        if (!hasResumeAction) {
+            return false
+        }
+        val pageTexts = snapshot.elements
+            .asSequence()
+            .map { element -> cleanText(element.text ?: element.desc) }
+            .filter(String::isNotBlank)
+            .toList()
+        if (pageTexts.isEmpty()) {
+            return false
+        }
+        val metaHitCount = resumePageMetaKeywords.count { keyword ->
+            pageTexts.any { text -> text.contains(keyword) }
+        }
+        return metaHitCount >= 2
+    }
+
+    private fun isCurrentQuestionAnswered(options: List<QuestionOption>, inputs: List<InputFieldRef>): Boolean {
+        if (options.isEmpty() && inputs.isEmpty()) {
+            return false
+        }
+        val choiceSatisfied = options.isEmpty() || options.any { option -> option.checked }
+        val inputSatisfied = inputs.isEmpty() || inputs.all(::isInputFieldFilled)
+        return choiceSatisfied && inputSatisfied
+    }
+
+    private fun isInputFieldFilled(input: InputFieldRef): Boolean {
+        val value = cleanText(input.text ?: input.desc)
+        if (value.isBlank()) {
+            return false
+        }
+        if (inputHintKeywords.any { keyword -> value.contains(keyword) }) {
+            return false
+        }
+        return !blankIndexPattern.matches(value)
+    }
+
+    private fun extractQuestionProgress(snapshot: UiSnapshot): QuestionProgress? {
+        val pageTexts = snapshot.elements
+            .asSequence()
+            .map { element -> cleanText(element.text ?: element.desc) }
+            .filter(String::isNotBlank)
+            .distinct()
+            .toList()
+        if (pageTexts.isEmpty()) {
+            return null
+        }
+        val candidates = mutableListOf<QuestionProgress>()
+        pageTexts.forEach { text ->
+            progressTotalCurrentPattern.findAll(text).forEach { match ->
+                val total = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return@forEach
+                val current = match.groupValues.getOrNull(2)?.toIntOrNull() ?: return@forEach
+                buildProgressCandidate(current = current, total = total)?.let(candidates::add)
+            }
+            progressCurrentTotalPattern.findAll(text).forEach { match ->
+                val current = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return@forEach
+                val total = match.groupValues.getOrNull(2)?.toIntOrNull() ?: return@forEach
+                buildProgressCandidate(current = current, total = total)?.let(candidates::add)
+            }
+            progressSlashPattern.findAll(text).forEach { match ->
+                val current = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return@forEach
+                val total = match.groupValues.getOrNull(2)?.toIntOrNull() ?: return@forEach
+                buildProgressCandidate(current = current, total = total)?.let(candidates::add)
+            }
+        }
+        return candidates.maxWithOrNull(
+            compareBy<QuestionProgress> { progress -> progress.total }
+                .thenBy { progress -> progress.current },
+        )
+    }
+
+    private fun buildProgressCandidate(current: Int, total: Int): QuestionProgress? {
+        if (current <= 0 || total <= 0 || current > total || total > 500) {
+            return null
+        }
+        return QuestionProgress(current = current, total = total)
+    }
+
+    private fun isFinalQuestion(questionIndex: Int?, progress: QuestionProgress?): Boolean {
+        if (progress == null) {
+            return false
+        }
+        if (progress.current >= progress.total) {
+            return true
+        }
+        return questionIndex != null && questionIndex >= progress.total
+    }
+
+    private fun hasUnansweredWarning(snapshot: UiSnapshot): Boolean {
+        return snapshot.elements.any { element ->
+            val text = cleanText(element.text ?: element.desc)
+            text.isNotBlank() && unansweredWarningKeywords.any { keyword -> text.contains(keyword) }
+        }
+    }
+
+    private fun isSubmitReadyPage(
+        actions: List<QuestionAction>,
+        finalQuestion: Boolean,
+        currentAnswered: Boolean,
+        unansweredWarning: Boolean,
+    ): Boolean {
+        if (unansweredWarning) {
+            return false
+        }
+        val hasSubmitAction = actions.any { action -> action.kind == "submit" }
+        if (!hasSubmitAction) {
+            return false
+        }
+        val hasNextAction = actions.any { action -> action.kind == "next" }
+        val likelyFinalQuestion = finalQuestion || !hasNextAction
+        return likelyFinalQuestion && currentAnswered
+    }
+
+    private fun isSubmitDialogPage(
+        actions: List<QuestionAction>,
+        options: List<QuestionOption>,
+        inputs: List<InputFieldRef>,
+        snapshot: UiSnapshot,
+        unansweredWarning: Boolean,
+    ): Boolean {
+        if (unansweredWarning) {
+            return false
+        }
+        if (options.isNotEmpty() || inputs.isNotEmpty()) {
+            return false
+        }
+        val hasConfirmLikeAction = actions.any { action -> action.kind == "confirm" || action.kind == "submit" }
+        val hasCancelAction = actions.any { action -> action.kind == "cancel" }
+        if (!hasConfirmLikeAction || !hasCancelAction) {
+            return false
+        }
+        val pageTexts = snapshot.elements
+            .asSequence()
+            .map { element -> cleanText(element.text ?: element.desc) }
+            .filter(String::isNotBlank)
+            .toList()
+        if (pageTexts.isEmpty()) {
+            return false
+        }
+        return submitDialogKeywords.any { keyword ->
+            pageTexts.any { text -> text.contains(keyword) }
+        }
+    }
+
+    private data class QuestionProgress(
+        val current: Int,
+        val total: Int,
+    )
 
     private data class BlankLabelAnchor(
         val index: Int,

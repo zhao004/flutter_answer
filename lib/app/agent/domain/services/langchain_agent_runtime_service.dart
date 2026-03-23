@@ -366,6 +366,7 @@ Execution rules:
 - Start by understanding the current page before taking action.
 - Use `get_question_context` as the primary source of question data, and use `get_page_context` only as supplemental structural context.
 - Avoid relying on fixed screen labels or hardcoded page assumptions; decide based on extracted question text, options, inputs, and actions.
+- If the page is an assignment entry/resume screen (for example, it shows schedule summary and a `继续答题`/`开始答题` button), treat that button as a progress action and click `next` once to enter the question flow.
 - After finishing the current question input/selection, you must attempt to advance using the `next` action when present.
 - If `next` is not explicitly listed but a progress action is likely, re-read context and try available candidate navigation actions before stopping.
 - Action tools already include a short post-action verification window.
@@ -380,7 +381,9 @@ Execution rules:
 - After finishing current question input/selection, you must advance. If `next` is missing or no progress is observed, execute up to 2 rounds of: small scroll down -> `get_question_context` -> retry candidate next action.
 - Keep actions minimal and deterministic.
 - If auto submit is disabled, stop at the submit page and explain that manual confirmation is required.
-- If auto submit is enabled, you may submit only when the submit intent is clear from the UI.
+- If auto submit is enabled and `structureSignals.submitReadySignal` is 1, click `submit` to finish.
+- If auto submit is enabled and a submit confirmation dialog appears (`structureSignals.submitDialogSignal` is 1 with `confirm` or dialog `submit`, plus `cancel`), click `confirm` when present; otherwise click the dialog `submit` action once.
+- If `structureSignals.unansweredWarningSignal` is 1, do not confirm submission; stop and report that unanswered questions remain.
 - Do not fabricate UI state. If you are unsure, call a tool.
 - Runtime guardrails: max ${limits.maxIterations} executor iterations, ${limits.maxExecutionTime.inMinutes} minutes, repeated same tool limit ${limits.maxRepeatedSameToolCall}, no-progress action streak limit ${limits.maxNoProgressActionStreak}.
 

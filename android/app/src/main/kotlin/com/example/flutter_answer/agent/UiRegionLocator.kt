@@ -6,7 +6,7 @@ object UiRegionLocator {
     private val blankIndexPattern = Regex("^第\\s*\\d{1,3}\\s*空[:：]?$")
     private val strictQuestionIndexPattern = Regex("^\\s*第\\s*\\d{1,4}\\s*题")
     private val questionTypePattern = Regex("^\\s*(?:\\d+[.、]\\s*)?(单选题|多选题|判断题|填空题|简答题|问答题|论述题)")
-    private val actionKeywords = listOf("下一题", "下一步", "继续", "提交", "交卷", "确认", "取消", "返回")
+    private val actionKeywords = listOf("下一题", "下一步", "继续", "继续答题", "继续作答", "开始答题", "去答题", "进入答题", "提交", "交卷", "确认", "取消", "返回")
     private val inputHintKeywords = listOf("请输入答案", "请填写答案", "未作答轻点两下来编辑", "轻点两下来编辑", "点击输入", "双击输入", "点击作答")
     private val editorChromeKeywords = listOf("上传附件", "拍照按钮", "录音按钮", "add", "photo", "voice")
 

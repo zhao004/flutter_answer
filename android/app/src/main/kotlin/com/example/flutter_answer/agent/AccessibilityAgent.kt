@@ -45,6 +45,7 @@ object AccessibilityAgent {
     private var lastQuestionContext: QuestionContext? = null
 
     private val highRiskKeywords = listOf("提交", "交卷", "确认", "发送", "完成")
+    private val progressActionKeywords = listOf("下一", "继续", "继续答题", "继续作答", "开始答题", "去答题", "进入答题")
 
     fun peekServiceStatus(): Map<String, Any?> {
         val service = ExamAccessibilityService.instance
@@ -791,11 +792,18 @@ object AccessibilityAgent {
     private fun inferActionKindFromText(text: String): String {
         return when {
             text.contains("提交") || text.contains("交卷") -> "submit"
-            text.contains("下一") || text.contains("继续") -> "next"
+            containsProgressActionKeyword(text) -> "next"
             text.contains("确认") || text.contains("确定") -> "confirm"
             text.contains("取消") || text.contains("返回") -> "cancel"
             else -> ""
         }
+    }
+
+    private fun containsProgressActionKeyword(text: String): Boolean {
+        if (text.isBlank()) {
+            return false
+        }
+        return progressActionKeywords.any { keyword -> text.contains(keyword) }
     }
 
     private fun resolveFallbackActionLocator(action: QuestionAction): NodeLocator? {
@@ -1581,7 +1589,7 @@ object AccessibilityAgent {
         }
         return if (highRiskKeywords.any { keyword -> text.contains(keyword) }) {
             "high"
-        } else if (text.contains("下一") || text.contains("继续")) {
+        } else if (containsProgressActionKeyword(text)) {
             "medium"
         } else {
             "low"
