@@ -127,6 +127,10 @@ class LangChainAgentRuntimeService {
             (definition) => _createTool(
               definition: definition,
               onToolInvoked: (callSignature) {
+                if (!actionToolNames.contains(definition.name)) {
+                  // 只对连续动作调用做“无进展”计数，避免“动作-读上下文-动作”诊断流程被误判为连续卡死。
+                  noProgressActionStreak = 0;
+                }
                 if (lastToolCallSignature == callSignature) {
                   repeatedToolCallStreak += 1;
                 } else {
@@ -373,6 +377,7 @@ Execution rules:
 - Use `wait_for_idle` before re-reading the UI only when navigation, scrolling, global actions, or delayed async refresh is likely. Do not call it mechanically after every successful `toggle_element` or `set_text`.
 - For text-input/fill-blank questions, fill every required input field in order. If you are uncertain about content, provide the most likely concise answer instead of stalling.
 - For text-input/fill-blank questions, verify each required input is actually written by re-reading `get_question_context` before moving to next. If `set_text` returns `verificationLevel=weak`, continue with caution and log the uncertainty in your final note.
+- For multi-select questions, rely on each option's `checked` field; prefer `toggle_element` with explicit `targetChecked=true`, skip already checked options, and re-read `get_question_context` after selection to confirm state.
 - For true/false questions, match options using text features like `对/错/是/否/true/false` and avoid using confirm-style assumptions.
 - If a tool fails, re-read the current context before retrying.
 - Do not repeat the same failed strategy more than 2 times. If progress still stalls, stop and return a concise blocker summary instead of looping.
@@ -446,11 +451,38 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
     if (_hasSemanticProgress(result)) {
       return false;
     }
+    if (_shouldIgnoreNoProgressForLowRiskClick(result)) {
+      return false;
+    }
     final postCheckChanged = result.result['postCheckChanged'];
     if (postCheckChanged is bool) {
       return !postCheckChanged;
     }
     return false;
+  }
+
+  bool _shouldIgnoreNoProgressForLowRiskClick(
+    NativeToolExecutionResult result,
+  ) {
+    if (result.tool != 'click_element' || !result.ok) {
+      return false;
+    }
+    final riskLevel = _readLowercaseString(result.result['riskLevel']);
+    if (riskLevel != 'low') {
+      return false;
+    }
+    final semanticActionKind = _readLowercaseString(
+      result.result['semanticActionKind'],
+    );
+    if (semanticActionKind.isNotEmpty) {
+      return false;
+    }
+    final errorCode = _readLowercaseString(result.result['code']);
+    if (errorCode == 'click_not_effective' || errorCode == 'click_failed') {
+      return false;
+    }
+    // 低风险点击（常见于多选项勾选）可能不会触发整体 UI 指纹变化，直接计入无进展会导致误停。
+    return true;
   }
 
   bool _hasSemanticProgress(NativeToolExecutionResult result) {
@@ -465,6 +497,10 @@ ${config.autoSubmit ? 'enabled' : 'disabled'}
       }
     }
     return false;
+  }
+
+  String _readLowercaseString(dynamic value) {
+    return value?.toString().trim().toLowerCase() ?? '';
   }
 
   String _buildToolCallSignature(String toolName, Map<String, dynamic> input) {
