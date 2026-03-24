@@ -23,7 +23,6 @@ import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.hypot
 import kotlin.math.max
@@ -39,10 +38,10 @@ object NativeOverlayController {
 
     private const val modeCollapsed = "collapsed"
     private const val modeExpanded = "expanded"
-    private const val collapsedWidthDp = 82
-    private const val collapsedHeightDp = 82
-    private const val expandedWidthDp = 380
-    private const val expandedHeightDp = 560
+    private const val collapsedWidthDp = 72
+    private const val collapsedHeightDp = 72
+    private const val expandedWidthDp = 288
+    private const val expandedHeightDp = 272
     private const val edgeMarginDp = 12f
 
     private const val colorTeal = 0xFF0C655F.toInt()
@@ -65,19 +64,10 @@ object NativeOverlayController {
     private var bubbleFaceView: TextView? = null
     private var bubbleIndicatorView: View? = null
     private var accessibilityValueView: TextView? = null
-    private var windowValueView: TextView? = null
     private var runStateValueView: TextView? = null
-    private var runMessageValueView: TextView? = null
-    private var modelValueView: TextView? = null
-    private var payloadValueView: TextView? = null
-    private var logValueView: TextView? = null
+    private var latestLogValueView: TextView? = null
     private var startActionView: TextView? = null
     private var stopActionView: TextView? = null
-    private var hintCardView: LinearLayout? = null
-    private var hintSpacerView: View? = null
-    private var hintTitleView: TextView? = null
-    private var hintSummaryView: TextView? = null
-    private var hintActionView: TextView? = null
 
     private var layoutParams: WindowManager.LayoutParams? = null
     private var snapAnimator: ValueAnimator? = null
@@ -322,13 +312,13 @@ object NativeOverlayController {
         )
         container.addView(
             indicator,
-            FrameLayout.LayoutParams(dpToPx(14f).roundToInt(), dpToPx(14f).roundToInt()).apply {
+            FrameLayout.LayoutParams(dpToPx(12f).roundToInt(), dpToPx(12f).roundToInt()).apply {
                 gravity = Gravity.TOP or Gravity.END
                 topMargin = dpToPx(2f).roundToInt()
                 marginEnd = dpToPx(2f).roundToInt()
             },
         )
-        container.setPadding(dpToPx(9f).roundToInt(), dpToPx(9f).roundToInt(), dpToPx(9f).roundToInt(), dpToPx(9f).roundToInt())
+        container.setPadding(dpToPx(8f).roundToInt(), dpToPx(8f).roundToInt(), dpToPx(8f).roundToInt(), dpToPx(8f).roundToInt())
         container.setOnTouchListener(
             DragTouchListener(
                 allowSnap = true,
@@ -345,7 +335,7 @@ object NativeOverlayController {
     private fun buildExpandedPanel(context: Context): LinearLayout {
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(16f).roundToInt(), dpToPx(16f).roundToInt(), dpToPx(16f).roundToInt(), dpToPx(16f).roundToInt())
+            setPadding(dpToPx(12f).roundToInt(), dpToPx(12f).roundToInt(), dpToPx(12f).roundToInt(), dpToPx(12f).roundToInt())
             background = panelDrawable()
             elevation = dpToPx(14f)
         }
@@ -353,18 +343,18 @@ object NativeOverlayController {
         val header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-        }
-        val title = TextView(context).apply {
-            text = "AI答题助手"
-            setTextColor(colorInk)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-            typeface = Typeface.DEFAULT_BOLD
             setOnTouchListener(DragTouchListener(allowSnap = false, onTap = null))
         }
-        val collapseButton = buildActionView(context, "收起", filled = false) {
+        val title = TextView(context).apply {
+            text = "AI答题"
+            setTextColor(colorInk)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val collapseButton = buildHeaderActionView(context, "收起") {
             toggleMode(modeCollapsed)
         }
-        val closeButton = buildActionView(context, "关闭", filled = false) {
+        val closeButton = buildHeaderActionView(context, "关闭") {
             hideOverlay(notify = true)
             appContext?.let(NativeOverlayService::stop)
         }
@@ -378,106 +368,28 @@ object NativeOverlayController {
         header.addView(closeButton)
 
         panel.addView(header)
-        panel.addView(space(context, 14f))
+        panel.addView(space(context, 12f))
 
+        // 展开态保持紧凑，但给状态区预留稳定高度，避免长日志把底部操作按钮挤出可点击区域。
         val statusCard = buildSectionCard(context)
-        accessibilityValueView = addInfoLine(context, statusCard, "无障碍")
-        windowValueView = addInfoLine(context, statusCard, "前台窗口")
+        statusCard.addView(buildSectionTitle(context, "当前状态"))
+        statusCard.addView(space(context, 8f))
+        accessibilityValueView = addInfoLine(context, statusCard, "使用条件")
         runStateValueView = addInfoLine(context, statusCard, "运行状态")
-        runMessageValueView = addInfoLine(context, statusCard, "状态描述")
-        modelValueView = addInfoLine(context, statusCard, "当前模型")
+        statusCard.addView(buildSectionCaption(context, "最近日志"))
+        statusCard.addView(space(context, 4f))
+        val latestLogView = buildBodyTextView(context).apply {
+            // 固定两行高度，让短日志和长日志都占用同一块区域，减少按钮位置跳动。
+            minLines = 2
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        statusCard.addView(latestLogView)
+        latestLogValueView = latestLogView
         panel.addView(statusCard)
-        panel.addView(space(context, 14f))
-
-        val hintCard = buildHintCard(context).apply {
-            visibility = View.GONE
-        }
-        val hintSpacer = space(context, 14f).apply {
-            visibility = View.GONE
-        }
-        panel.addView(hintCard)
-        panel.addView(hintSpacer)
-        hintCardView = hintCard
-        hintSpacerView = hintSpacer
-
-        val actionSection = buildSectionCard(context)
-        val actionTitle = buildSectionTitle(context, "快捷操作")
-        val row1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val row2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val startAction = buildActionView(context, "开始", filled = true) {
-            emitOverlayCommand("start_agent")
-        }
-        val stopAction = buildActionView(context, "停止", filled = false) {
-            emitOverlayCommand("stop_agent")
-        }
-        val refreshActionView = buildActionView(context, "题目", filled = false) {
-            emitOverlayCommand("refresh_question_context")
-        }
-        val scrollActionView = buildActionView(context, "下滑", filled = false) {
-            emitOverlayCommand("scroll_down")
-        }
-        val backActionView = buildActionView(context, "返回", filled = false) {
-            emitOverlayCommand("press_back")
-        }
-        val syncActionView = buildActionView(context, "同步", filled = false) {
-            emitOverlayCommand("sync_snapshot")
-        }
-        row1.addView(startAction, weightedLayoutParams())
-        row1.addView(space(context, 8f))
-        row1.addView(stopAction, weightedLayoutParams())
-        row1.addView(space(context, 8f))
-        row1.addView(refreshActionView, weightedLayoutParams())
-        row2.addView(scrollActionView, weightedLayoutParams())
-        row2.addView(space(context, 8f))
-        row2.addView(backActionView, weightedLayoutParams())
-        row2.addView(space(context, 8f))
-        row2.addView(syncActionView, weightedLayoutParams())
-        actionSection.addView(actionTitle)
-        actionSection.addView(space(context, 10f))
-        actionSection.addView(row1)
-        actionSection.addView(space(context, 8f))
-        actionSection.addView(row2)
-        startActionView = startAction
-        stopActionView = stopAction
-        panel.addView(actionSection)
-        panel.addView(space(context, 14f))
-
-        val payloadSection = buildSectionCard(context)
-        payloadSection.addView(buildSectionTitle(context, "最近结果"))
-        payloadSection.addView(space(context, 10f))
-        val payloadValue = buildBodyTextView(context)
-        payloadSection.addView(payloadValue)
-        payloadValueView = payloadValue
-        panel.addView(payloadSection)
-        panel.addView(space(context, 14f))
-
-        val logSection = buildSectionCard(context)
-        logSection.addView(buildSectionTitle(context, "最近日志"))
-        logSection.addView(space(context, 10f))
-        val logScrollView = ScrollView(context).apply {
-            overScrollMode = View.OVER_SCROLL_NEVER
-            isVerticalScrollBarEnabled = false
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f,
-            )
-        }
-        val logValue = buildBodyTextView(context).apply {
-            maxLines = Int.MAX_VALUE
-            ellipsize = null
-        }
-        logValueView = logValue
-        logScrollView.addView(
-            logValue,
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        logSection.addView(logScrollView)
+        panel.addView(space(context, 12f))
         panel.addView(
-            logSection,
+            View(context),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -485,43 +397,23 @@ object NativeOverlayController {
             ),
         )
 
-        return panel
-    }
+        val actionRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val startAction = buildActionView(context, "开始", filled = true) {
+            emitOverlayCommand("start_agent")
+        }
+        val stopAction = buildActionView(context, "停止", filled = false) {
+            emitOverlayCommand("stop_agent")
+        }
+        actionRow.addView(startAction, weightedLayoutParams())
+        actionRow.addView(space(context, 8f))
+        actionRow.addView(stopAction, weightedLayoutParams())
+        startActionView = startAction
+        stopActionView = stopAction
+        panel.addView(actionRow)
 
-    private fun buildHintCard(context: Context): LinearLayout {
-        val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(14f).roundToInt(), dpToPx(12f).roundToInt(), dpToPx(14f).roundToInt(), dpToPx(12f).roundToInt())
-            background = roundedDrawable(18f, withAlpha(colorTeal, 0.10f), withAlpha(colorTeal, 0.16f))
-        }
-        val titleView = TextView(context).apply {
-            setTextColor(colorTeal)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        val summaryView = TextView(context).apply {
-            setTextColor(colorInk)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            maxLines = 3
-            ellipsize = TextUtils.TruncateAt.END
-            setLineSpacing(dpToPx(2f), 1f)
-        }
-        val actionView = TextView(context).apply {
-            setTextColor(colorTeal)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        card.addView(titleView)
-        card.addView(space(context, 6f))
-        card.addView(summaryView)
-        card.addView(space(context, 8f))
-        card.addView(actionView)
-        hintTitleView = titleView
-        hintSummaryView = summaryView
-        hintActionView = actionView
-        return card
+        return panel
     }
 
     private fun buildSectionCard(context: Context): LinearLayout {
@@ -537,6 +429,15 @@ object NativeOverlayController {
             this.text = text
             setTextColor(colorInk)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+    }
+
+    private fun buildSectionCaption(context: Context, text: String): TextView {
+        return TextView(context).apply {
+            this.text = text
+            setTextColor(colorSubtle)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.DEFAULT_BOLD
         }
     }
@@ -578,6 +479,24 @@ object NativeOverlayController {
 
     private fun weightedLayoutParams() = LinearLayout.LayoutParams(0, dpToPx(40f).roundToInt(), 1f)
 
+    private fun buildHeaderActionView(
+        context: Context,
+        label: String,
+        onClick: () -> Unit,
+    ): TextView {
+        return TextView(context).apply {
+            text = label
+            gravity = Gravity.CENTER
+            setTextColor(colorSubtle)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.DEFAULT_BOLD
+            background = roundedDrawable(12f, Color.WHITE, borderColor = colorOutline)
+            setPadding(dpToPx(10f).roundToInt(), 0, dpToPx(10f).roundToInt(), 0)
+            minHeight = dpToPx(32f).roundToInt()
+            setOnClickListener { onClick() }
+        }
+    }
+
     private fun buildActionView(
         context: Context,
         label: String,
@@ -616,48 +535,25 @@ object NativeOverlayController {
             2f,
         )
 
-        accessibilityValueView?.text = if (accessibilityEnabled) "已开启" else "未开启"
-        windowValueView?.text = if (hasActiveWindow) "已检测" else "未检测"
+        accessibilityValueView?.text = when {
+            accessibilityEnabled && hasActiveWindow -> "已就绪"
+            accessibilityEnabled -> "等待页面"
+            else -> "待授权"
+        }
         runStateValueView?.text = runStatusLabel(agentRunStatus["status"]?.toString())
-        runMessageValueView?.text = readableText(agentRunStatus["message"]?.toString(), "等待指令")
-        modelValueView?.text = readableText(agentConfig["model"]?.toString(), "未设置")
-        payloadValueView?.text = readableText(limitText(lastPayload, 480), "暂无结果")
-        logValueView?.text = readableText(logs.take(20).joinToString("\n"), "暂无日志")
-        renderDiagnosticHint()
+        val latestLog = logs.firstOrNull()?.trim().takeUnless { it.isNullOrEmpty() }
+        val statusMessage = agentRunStatus["message"]?.toString()?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: diagnosticHint["summary"]?.toString()?.trim().takeUnless { it.isNullOrEmpty() }
+        latestLogValueView?.text = readableText(
+            latestLog ?: statusMessage,
+            if (accessibilityEnabled && hasActiveWindow) "可以开始执行自动答题。"
+            else "请先完成权限和页面准备。",
+        )
 
         startActionView?.alpha = if (running) 0.45f else 1f
         startActionView?.isEnabled = !running
         stopActionView?.alpha = if (running) 1f else 0.45f
         stopActionView?.isEnabled = running
-    }
-
-    private fun renderDiagnosticHint() {
-        val card = hintCardView ?: return
-        val spacer = hintSpacerView
-        val title = readableText(diagnosticHint["title"]?.toString(), "")
-        val summary = readableText(diagnosticHint["summary"]?.toString(), "")
-        val actions = normalizeStringList(diagnosticHint["actions"])
-        if (title.isBlank() && summary.isBlank() && actions.isEmpty()) {
-            card.visibility = View.GONE
-            spacer?.visibility = View.GONE
-            return
-        }
-
-        val severity = diagnosticHint["severity"]?.toString().orEmpty()
-        val accentColor = diagnosticSeverityColor(severity)
-        card.background = roundedDrawable(18f, withAlpha(accentColor, 0.10f), withAlpha(accentColor, 0.16f))
-        hintTitleView?.text = if (title.isBlank()) diagnosticSeverityTitle(severity) else title
-        hintTitleView?.setTextColor(accentColor)
-        hintSummaryView?.text = if (summary.isBlank()) {
-            actions.firstOrNull() ?: "请回到主页检查配置后重试。"
-        } else {
-            summary
-        }
-        hintActionView?.text = actions.firstOrNull()?.let { "建议：$it" }.orEmpty()
-        hintActionView?.visibility = if (actions.isEmpty()) View.GONE else View.VISIBLE
-        hintActionView?.setTextColor(accentColor)
-        card.visibility = View.VISIBLE
-        spacer?.visibility = View.VISIBLE
     }
 
     private fun updateLayout(manager: WindowManager?) {
@@ -774,13 +670,6 @@ object NativeOverlayController {
         return value?.trim().takeUnless { it.isNullOrEmpty() } ?: fallback
     }
 
-    private fun limitText(value: String, maxLength: Int): String {
-        if (value.length <= maxLength) {
-            return value
-        }
-        return value.take(maxLength) + "..."
-    }
-
     private fun normalizeMode(mode: String?): String {
         return if (mode == modeCollapsed) modeCollapsed else modeExpanded
     }
@@ -822,22 +711,6 @@ object NativeOverlayController {
             "stopping" -> "停止中"
             "stopped" -> "已停止"
             else -> "空闲"
-        }
-    }
-
-    private fun diagnosticSeverityTitle(severity: String): String {
-        return when (severity) {
-            "warning" -> "运行警告"
-            "error" -> "运行异常"
-            else -> "诊断提示"
-        }
-    }
-
-    private fun diagnosticSeverityColor(severity: String): Int {
-        return when (severity) {
-            "warning" -> colorAmber
-            "error" -> colorRed
-            else -> colorTeal
         }
     }
 

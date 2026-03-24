@@ -635,9 +635,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
 
   _OverlayWindowGeometry _overlayGeometryForMode(String mode) {
     if (mode == 'collapsed') {
-      return const _OverlayWindowGeometry(width: 82, height: 82);
+      return const _OverlayWindowGeometry(width: 72, height: 72);
     }
-    return const _OverlayWindowGeometry(width: 380, height: 560);
+    return const _OverlayWindowGeometry(width: 288, height: 236);
   }
 
   OverlayWindowPosition _resolveOverlayPositionForMode({
