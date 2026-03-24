@@ -15,6 +15,7 @@ import '../../agent/domain/services/langchain_agent_runtime_service.dart';
 import '../../models/overlay_window_position.dart';
 import '../../services/agent_diagnostic_hint.dart';
 import '../../services/overlay_platform_gateway.dart';
+import '../../theme/app_theme.dart';
 
 class HomeController extends GetxController with WidgetsBindingObserver {
   static const double _expandedOverlayEdgeMargin = 12;
@@ -877,6 +878,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     return _sendOverlayMessage(<String, dynamic>{
       'source': 'main',
       'type': 'snapshot',
+      'theme': AppThemeTokens.overlayThemePayload(),
       'serviceStatus': Map<String, dynamic>.from(serviceStatus),
       'agentConfig': Map<String, dynamic>.from(agentConfig),
       'agentRunStatus': Map<String, dynamic>.from(agentRunStatus),

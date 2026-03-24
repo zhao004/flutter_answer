@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../services/agent_diagnostic_hint.dart';
+import '../../theme/app_theme.dart';
 import 'home_controller.dart';
 
 /// 首页视图，仅保留权限、配置、诊断和日志四个核心区域，避免首屏层级过深。
@@ -313,7 +314,7 @@ class _DiagnosticHintCard extends StatelessWidget {
         Icons.info_outline,
       ),
       AgentDiagnosticSeverity.warning => (
-        const Color(0xFF9A6700),
+        AppThemeTokens.warningColor,
         '警告',
         Icons.warning_amber_outlined,
       ),
@@ -364,7 +365,6 @@ class _LogsCard extends StatefulWidget {
 }
 
 class _LogsCardState extends State<_LogsCard> {
-  static const _logPanelBackgroundColor = Color(0xFFEFF7FF);
   bool _expanded = false;
 
   @override
@@ -401,7 +401,7 @@ class _LogsCardState extends State<_LogsCard> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    color: _logPanelBackgroundColor,
+                    color: AppThemeTokens.logPanelBackgroundColor,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
                       color: theme.colorScheme.outlineVariant.withValues(

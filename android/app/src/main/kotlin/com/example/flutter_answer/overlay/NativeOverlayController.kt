@@ -46,15 +46,6 @@ object NativeOverlayController {
     private const val collapsedBubblePaddingDp = 8f
     private const val collapsedEdgeMarginDp = 4f
 
-    private const val colorTeal = 0xFF0C655F.toInt()
-    private const val colorAmber = 0xFFE4A646.toInt()
-    private const val colorGreen = 0xFF2E7D32.toInt()
-    private const val colorRed = 0xFFC62828.toInt()
-    private const val colorInk = 0xFF1F2937.toInt()
-    private const val colorSubtle = 0xFF6B7280.toInt()
-    private const val colorPanel = 0xF7FFFFFF.toInt()
-    private const val colorOutline = 0x1F0F172A
-
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var appContext: Context? = null
@@ -70,6 +61,10 @@ object NativeOverlayController {
     private var latestLogValueView: TextView? = null
     private var startActionView: TextView? = null
     private var stopActionView: TextView? = null
+    private val primaryTextViews = mutableListOf<TextView>()
+    private val secondaryTextViews = mutableListOf<TextView>()
+    private val sectionCardViews = mutableListOf<View>()
+    private val headerActionViews = mutableListOf<TextView>()
 
     private var layoutParams: WindowManager.LayoutParams? = null
     private var snapAnimator: ValueAnimator? = null
@@ -85,6 +80,7 @@ object NativeOverlayController {
     private var diagnosticHint: Map<String, Any?> = emptyMap()
     private var lastPayload = "{}"
     private var logs: List<String> = emptyList()
+    private var themePalette = OverlayThemePalette()
 
     fun initialize(context: Context) {
         appContext = context.applicationContext
@@ -170,6 +166,7 @@ object NativeOverlayController {
         runOnMain {
             when (payload["type"]?.toString()) {
                 "snapshot" -> {
+                    applyThemePayload(normalizeMap(payload["theme"]))
                     serviceStatus = normalizeMap(payload["serviceStatus"])
                     agentConfig = normalizeMap(payload["agentConfig"])
                     agentRunStatus = normalizeMap(payload["agentRunStatus"])
@@ -194,6 +191,10 @@ object NativeOverlayController {
 
                 "diagnostic_hint" -> {
                     diagnosticHint = normalizeMap(payload["payload"])
+                }
+
+                "theme" -> {
+                    applyThemePayload(normalizeMap(payload["payload"]))
                 }
 
                 "overlay_state" -> {
@@ -295,14 +296,14 @@ object NativeOverlayController {
         val bubbleFace = TextView(context).apply {
             gravity = Gravity.CENTER
             text = "AI"
-            setTextColor(Color.WHITE)
+            setTextColor(themePalette.onPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.DEFAULT_BOLD
-            background = bubbleDrawable(colorTeal)
+            background = bubbleDrawable(themePalette.primaryStrong)
             elevation = dpToPx(6f)
         }
         val indicator = View(context).apply {
-            background = circleDrawable(colorRed, Color.WHITE, 2f)
+            background = circleDrawable(themePalette.error, themePalette.surfaceCard, 2f)
         }
 
         container.addView(
@@ -354,10 +355,11 @@ object NativeOverlayController {
         }
         val title = TextView(context).apply {
             text = "AI答题"
-            setTextColor(colorInk)
+            setTextColor(themePalette.foreground)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             typeface = Typeface.DEFAULT_BOLD
         }
+        primaryTextViews += title
         val collapseButton = buildHeaderActionView(context, "收起") {
             toggleMode(modeCollapsed)
         }
@@ -427,35 +429,39 @@ object NativeOverlayController {
         return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dpToPx(14f).roundToInt(), dpToPx(14f).roundToInt(), dpToPx(14f).roundToInt(), dpToPx(14f).roundToInt())
-            background = roundedDrawable(18f, Color.WHITE, borderColor = colorOutline)
+            background = roundedDrawable(18f, themePalette.surfaceCard, borderColor = themePalette.outline)
+            sectionCardViews += this
         }
     }
 
     private fun buildSectionTitle(context: Context, text: String): TextView {
         return TextView(context).apply {
             this.text = text
-            setTextColor(colorInk)
+            setTextColor(themePalette.foreground)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.DEFAULT_BOLD
+            primaryTextViews += this
         }
     }
 
     private fun buildSectionCaption(context: Context, text: String): TextView {
         return TextView(context).apply {
             this.text = text
-            setTextColor(colorSubtle)
+            setTextColor(themePalette.muted)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.DEFAULT_BOLD
+            secondaryTextViews += this
         }
     }
 
     private fun buildBodyTextView(context: Context): TextView {
         return TextView(context).apply {
-            setTextColor(colorInk)
+            setTextColor(themePalette.foreground)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setLineSpacing(dpToPx(2f), 1f)
             maxLines = 8
             ellipsize = TextUtils.TruncateAt.END
+            primaryTextViews += this
         }
     }
 
@@ -466,14 +472,16 @@ object NativeOverlayController {
         }
         val labelView = TextView(context).apply {
             text = label
-            setTextColor(colorSubtle)
+            setTextColor(themePalette.muted)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            secondaryTextViews += this
         }
         val valueView = TextView(context).apply {
-            setTextColor(colorInk)
+            setTextColor(themePalette.foreground)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.END
+            primaryTextViews += this
         }
         row.addView(labelView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(valueView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -494,13 +502,14 @@ object NativeOverlayController {
         return TextView(context).apply {
             text = label
             gravity = Gravity.CENTER
-            setTextColor(colorSubtle)
+            setTextColor(themePalette.muted)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.DEFAULT_BOLD
-            background = roundedDrawable(12f, Color.WHITE, borderColor = colorOutline)
+            background = roundedDrawable(12f, themePalette.surfaceCard, borderColor = themePalette.outline)
             setPadding(dpToPx(10f).roundToInt(), 0, dpToPx(10f).roundToInt(), 0)
             minHeight = dpToPx(32f).roundToInt()
             setOnClickListener { onClick() }
+            headerActionViews += this
         }
     }
 
@@ -510,15 +519,16 @@ object NativeOverlayController {
         filled: Boolean,
         onClick: () -> Unit,
     ): TextView {
-        val backgroundColor = if (filled) colorTeal else Color.WHITE
-        val textColor = if (filled) Color.WHITE else colorInk
+        val backgroundColor = if (filled) themePalette.primary else themePalette.surfaceCard
+        val borderColor = if (filled) themePalette.primaryStrong else themePalette.outline
+        val textColor = if (filled) themePalette.onPrimary else themePalette.foreground
         return TextView(context).apply {
             text = label
             gravity = Gravity.CENTER
             setTextColor(textColor)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.DEFAULT_BOLD
-            background = roundedDrawable(14f, backgroundColor, borderColor = if (filled) colorTeal else colorOutline)
+            background = roundedDrawable(14f, backgroundColor, borderColor = borderColor)
             setPadding(dpToPx(12f).roundToInt(), 0, dpToPx(12f).roundToInt(), 0)
             minHeight = dpToPx(40f).roundToInt()
             setOnClickListener { onClick() }
@@ -535,10 +545,12 @@ object NativeOverlayController {
         val accessibilityEnabled = serviceStatus["enabled"] == true
         val hasActiveWindow = serviceStatus["hasActiveWindow"] == true
 
-        bubbleFaceView?.background = bubbleDrawable(if (running) colorAmber else colorTeal)
+        applyThemeToViews()
+        bubbleFaceView?.setTextColor(themePalette.onPrimary)
+        bubbleFaceView?.background = bubbleDrawable(if (running) themePalette.warning else themePalette.primaryStrong)
         bubbleIndicatorView?.background = circleDrawable(
-            if (accessibilityEnabled) colorGreen else colorRed,
-            Color.WHITE,
+            if (accessibilityEnabled) themePalette.success else themePalette.error,
+            themePalette.surfaceCard,
             2f,
         )
 
@@ -561,6 +573,50 @@ object NativeOverlayController {
         startActionView?.isEnabled = !running
         stopActionView?.alpha = if (running) 1f else 0.45f
         stopActionView?.isEnabled = running
+    }
+
+    private fun applyThemePayload(payload: Map<String, Any?>) {
+        if (payload.isEmpty()) {
+            return
+        }
+        themePalette = themePalette.copy(
+            primary = readColor(payload["primary"]) ?: themePalette.primary,
+            primaryStrong = readColor(payload["primaryStrong"]) ?: themePalette.primaryStrong,
+            onPrimary = readColor(payload["onPrimary"]) ?: themePalette.onPrimary,
+            surface = readColor(payload["surface"]) ?: themePalette.surface,
+            surfaceCard = readColor(payload["surfaceCard"]) ?: themePalette.surfaceCard,
+            foreground = readColor(payload["foreground"]) ?: themePalette.foreground,
+            muted = readColor(payload["muted"]) ?: themePalette.muted,
+            outline = readColor(payload["outline"]) ?: themePalette.outline,
+            warning = readColor(payload["warning"]) ?: themePalette.warning,
+            success = readColor(payload["success"]) ?: themePalette.success,
+            error = readColor(payload["error"]) ?: themePalette.error,
+        )
+    }
+
+    private fun applyThemeToViews() {
+        expandedPanel?.background = panelDrawable()
+        sectionCardViews.forEach { card ->
+            card.background = roundedDrawable(18f, themePalette.surfaceCard, borderColor = themePalette.outline)
+        }
+        primaryTextViews.forEach { textView ->
+            textView.setTextColor(themePalette.foreground)
+        }
+        secondaryTextViews.forEach { textView ->
+            textView.setTextColor(themePalette.muted)
+        }
+        headerActionViews.forEach { actionView ->
+            actionView.setTextColor(themePalette.muted)
+            actionView.background = roundedDrawable(12f, themePalette.surfaceCard, borderColor = themePalette.outline)
+        }
+        startActionView?.apply {
+            setTextColor(themePalette.onPrimary)
+            background = roundedDrawable(14f, themePalette.primary, borderColor = themePalette.primaryStrong)
+        }
+        stopActionView?.apply {
+            setTextColor(themePalette.foreground)
+            background = roundedDrawable(14f, themePalette.surfaceCard, borderColor = themePalette.outline)
+        }
     }
 
     private fun updateLayout(manager: WindowManager?) {
@@ -713,6 +769,14 @@ object NativeOverlayController {
         }
     }
 
+    private fun readColor(value: Any?): Int? {
+        return when (value) {
+            is Number -> value.toLong().toInt()
+            is String -> parseColorHex(value)
+            else -> null
+        }
+    }
+
     private fun runStatusLabel(status: String?): String {
         return when (status) {
             "starting" -> "启动中"
@@ -736,7 +800,7 @@ object NativeOverlayController {
     }
 
     private fun panelDrawable(): GradientDrawable {
-        return roundedDrawable(24f, colorPanel, borderColor = withAlpha(colorInk, 0.08f))
+        return roundedDrawable(24f, themePalette.surface, borderColor = themePalette.outline)
     }
 
     private fun circleDrawable(fillColor: Int, strokeColor: Int, strokeDp: Float): GradientDrawable {
@@ -768,7 +832,31 @@ object NativeOverlayController {
         }
     }
 
+    private fun parseColorHex(value: String): Int? {
+        val normalized = value.trim().removePrefix("#").removePrefix("0x").removePrefix("0X")
+        val argb = when (normalized.length) {
+            6 -> "FF$normalized"
+            8 -> normalized
+            else -> return null
+        }
+        return argb.toLongOrNull(16)?.toInt()
+    }
+
     private data class OverlaySize(val width: Int, val height: Int)
+
+    private data class OverlayThemePalette(
+        val primary: Int = 0xFF72A8E3.toInt(),
+        val primaryStrong: Int = 0xFF8EC5FF.toInt(),
+        val onPrimary: Int = 0xFF0E2A43.toInt(),
+        val surface: Int = 0xF0FFFFFF.toInt(),
+        val surfaceCard: Int = 0xFFFFFFFF.toInt(),
+        val foreground: Int = 0xFF18324A.toInt(),
+        val muted: Int = 0xFF526172.toInt(),
+        val outline: Int = 0xA7B6C8D6.toInt(),
+        val warning: Int = 0xFF9A6700.toInt(),
+        val success: Int = 0xFF2F7D4A.toInt(),
+        val error: Int = 0xFFBA1A1A.toInt(),
+    )
 
     /**
      * 统一处理拖动手势。
