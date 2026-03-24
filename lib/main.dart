@@ -3,7 +3,10 @@ import 'package:get/get.dart';
 
 import 'app/routes/app_pages.dart';
 
-const _brandSeedColor = Color(0xFFC62828);
+const _brandSeedColor = Color(0xFF8EC5FF);
+const _appBackgroundColor = Color(0xFFF3F9FF);
+const _appForegroundColor = Color(0xFF18324A);
+const _cardShadowColor = Color(0x1A8EC5FF);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,28 +30,28 @@ ThemeData _buildAppTheme() {
   return ThemeData(
     useMaterial3: true,
     colorScheme: colorScheme,
-    scaffoldBackgroundColor: const Color(0xFFFDF6F4),
+    scaffoldBackgroundColor: _appBackgroundColor,
     textTheme: Typography.material2021().black.apply(
-      bodyColor: const Color(0xFF321314),
-      displayColor: const Color(0xFF321314),
+      bodyColor: _appForegroundColor,
+      displayColor: _appForegroundColor,
     ),
     appBarTheme: AppBarTheme(
       centerTitle: false,
       elevation: 0,
       scrolledUnderElevation: 0,
       backgroundColor: Colors.transparent,
-      foregroundColor: const Color(0xFF321314),
+      foregroundColor: _appForegroundColor,
       surfaceTintColor: Colors.transparent,
       titleTextStyle: Typography.material2021().black.titleLarge?.copyWith(
         fontWeight: FontWeight.w800,
-        color: const Color(0xFF321314),
+        color: _appForegroundColor,
       ),
     ),
     cardTheme: CardThemeData(
       margin: EdgeInsets.zero,
       elevation: 0,
       color: Colors.white.withValues(alpha: 0.94),
-      shadowColor: const Color(0x1AC62828),
+      shadowColor: _cardShadowColor,
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(28),
