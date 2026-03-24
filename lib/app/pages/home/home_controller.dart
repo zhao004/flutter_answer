@@ -168,23 +168,6 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     });
   }
 
-  Future<void> fetchUiSnapshot() async {
-    await _runAction(() async {
-      final payload = await _executeTool('get_ui_snapshot');
-      _setPayload(payload.toMap());
-    });
-  }
-
-  Future<void> waitForIdle() async {
-    await _runAction(() async {
-      final payload = await _executeTool(
-        'wait_for_idle',
-        arguments: <String, dynamic>{'timeoutMs': 1200},
-      );
-      _setPayload(payload.toMap());
-    });
-  }
-
   Future<void> scrollScreen({
     String direction = 'down',
     String amount = 'medium',
@@ -637,7 +620,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     if (mode == 'collapsed') {
       return const _OverlayWindowGeometry(width: 72, height: 72);
     }
-    return const _OverlayWindowGeometry(width: 288, height: 236);
+    return const _OverlayWindowGeometry(width: 288, height: 272);
   }
 
   OverlayWindowPosition _resolveOverlayPositionForMode({

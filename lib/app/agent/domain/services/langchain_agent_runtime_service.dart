@@ -6,7 +6,6 @@ import 'package:langchain_openai/langchain_openai.dart';
 import '../../data/agent_platform_gateway.dart';
 import '../models/agent_config.dart';
 import '../models/agent_run_state.dart';
-import '../models/connectivity_probe_result.dart';
 import '../models/native_tool_definition.dart';
 import '../models/native_tool_execution.dart';
 import 'provider_url_resolver.dart';
@@ -30,58 +29,6 @@ class LangChainAgentRuntimeService {
 
   void requestStop() {
     _stopRequested = true;
-  }
-
-  Future<ConnectivityProbeResult> sendConnectivityProbe({
-    required AgentConfig config,
-    required List<Map<String, String>> messages,
-  }) async {
-    final sanitizedConfig = config.sanitized();
-    _validateConfig(sanitizedConfig);
-    final prompt = _buildConnectivityPrompt(messages);
-    final startedAt = DateTime.now();
-
-    try {
-      final model = _buildModel(sanitizedConfig);
-      final response = await model.invoke(PromptValue.string(prompt));
-      final reply = response.output.content.trim();
-      final latencyMs = DateTime.now().difference(startedAt).inMilliseconds;
-
-      if (reply.isEmpty) {
-        return ConnectivityProbeResult(
-          ok: false,
-          message: '模型返回了空内容。',
-          reply: '',
-          latencyMs: latencyMs,
-          model: sanitizedConfig.model,
-          providerUrl: ProviderUrlResolver.resolveBaseUrl(
-            sanitizedConfig.providerUrl,
-          ),
-        );
-      }
-
-      return ConnectivityProbeResult(
-        ok: true,
-        message: '模型连通性正常。',
-        reply: reply,
-        latencyMs: latencyMs,
-        model: sanitizedConfig.model,
-        providerUrl: ProviderUrlResolver.resolveBaseUrl(
-          sanitizedConfig.providerUrl,
-        ),
-      );
-    } catch (error) {
-      return ConnectivityProbeResult(
-        ok: false,
-        message: error.toString(),
-        reply: '',
-        latencyMs: DateTime.now().difference(startedAt).inMilliseconds,
-        model: sanitizedConfig.model,
-        providerUrl: ProviderUrlResolver.resolveBaseUrl(
-          sanitizedConfig.providerUrl,
-        ),
-      );
-    }
   }
 
   Future<AgentRunState> run({
@@ -379,7 +326,8 @@ Execution rules:
 - Start by understanding the current page before taking action.
 - Use `get_question_context` as the primary source of question data, and use `get_page_context` only as supplemental structural context.
 - Avoid relying on fixed screen labels or hardcoded page assumptions; decide based on extracted question text, options, inputs, and actions.
-- If the page is an assignment entry/resume screen (for example, it shows schedule summary and a `继续答题`/`开始答题` button), treat that button as a progress action and click `next` once to enter the question flow.
+- Treat `context.pageStage` as the primary page-phase signal when it is present.
+- If `context.pageStage` is `resume_entry`, or the page looks like an assignment entry/resume screen (for example, it shows schedule summary and a `继续答题`/`开始答题` button), treat that button as a progress action and click `next` once to enter the question flow.
 - After finishing the current question input/selection, you must attempt to advance using the `next` action when present.
 - If `next` is not explicitly listed but a progress action is likely, re-read context and try available candidate navigation actions before stopping.
 - Action tools already include a short post-action verification window.
@@ -394,9 +342,10 @@ Execution rules:
 - If action calls keep returning no UI change, stop early and report the blocker instead of brute-force retries.
 - After finishing current question input/selection, you must advance. If `next` is missing or no progress is observed, execute up to 2 rounds of: small scroll down -> `get_question_context` -> retry candidate next action.
 - Keep actions minimal and deterministic.
-- Stop immediately when `structureSignals.submitReadySignal` is 1, `structureSignals.submitDialogSignal` is 1, or `structureSignals.unansweredWarningSignal` is 1.
+- Never stop on `resume_entry`; it is a continue page, not a submit page.
+- Stop immediately when `context.pageStage` is `submit_ready`, `submit_dialog`, or `submit_warning`. If `pageStage` is unavailable, fall back to `structureSignals.submitReadySignal`, `structureSignals.submitDialogSignal`, or `structureSignals.submitWarningSignal`/`structureSignals.unansweredWarningSignal`.
 - At any submit-related page or dialog, do not click `submit`, `confirm`, or similar final actions. Stop and explain that manual confirmation is required.
-- If `structureSignals.unansweredWarningSignal` is 1, clearly report that unanswered questions remain.
+- If `context.pageStage` is `submit_warning`, or the unanswered warning signal is present, clearly report that unanswered questions remain.
 - Do not fabricate UI state. If you are unsure, call a tool.
 - Runtime guardrails: max ${limits.maxIterations} executor iterations, ${limits.maxExecutionTime.inMinutes} minutes, repeated same tool limit ${limits.maxRepeatedSameToolCall}, no-progress action streak limit ${limits.maxNoProgressActionStreak}.
 
@@ -406,28 +355,6 @@ $toolNames
 Task:
 ${config.taskPrompt}
 ''';
-  }
-
-  String _buildConnectivityPrompt(List<Map<String, String>> messages) {
-    final buffer = StringBuffer()
-      ..writeln('你正在为一个 Android Agent 应用验证模型连通性。')
-      ..writeln('请简短回复最后一条用户消息。')
-      ..writeln('如果这是一次连通性测试，请在回复中明确包含“模型连通正常”。')
-      ..writeln()
-      ..writeln('对话如下：');
-
-    for (final message in messages) {
-      final role = message['role']?.trim().isNotEmpty == true
-          ? message['role']!.trim()
-          : 'user';
-      final content = message['content']?.trim() ?? '';
-      if (content.isEmpty) {
-        continue;
-      }
-      buffer.writeln('$role: $content');
-    }
-
-    return buffer.toString();
   }
 
   void _validateConfig(AgentConfig config) {
