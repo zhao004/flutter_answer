@@ -17,6 +17,11 @@ import '../../services/agent_diagnostic_hint.dart';
 import '../../services/overlay_platform_gateway.dart';
 
 class HomeController extends GetxController with WidgetsBindingObserver {
+  static const double _expandedOverlayEdgeMargin = 12;
+  static const double _collapsedOverlayContentPadding = 8;
+  static const double _collapsedOverlayEdgeMargin =
+      _expandedOverlayEdgeMargin - _collapsedOverlayContentPadding;
+
   HomeController({
     required AgentPlatformGateway platformGateway,
     required OverlayPlatformGateway overlayPlatformGateway,
@@ -66,7 +71,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   bool _systemSettingsFlowActive = false;
   String _overlayWindowMode = 'expanded';
   OverlayWindowPosition _overlayWindowPosition = const OverlayWindowPosition(
-    12,
+    _expandedOverlayEdgeMargin,
     120,
   );
   String? _lastLogLine;
@@ -623,6 +628,14 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     return const _OverlayWindowGeometry(width: 288, height: 272);
   }
 
+  double _overlayEdgeMarginForMode(String mode) {
+    // 缩小态气泡本身还有 8dp 内边距，因此外层边距要更小，才能让视觉贴边距离与展开态一致。
+    if (mode == 'collapsed') {
+      return _collapsedOverlayEdgeMargin;
+    }
+    return _expandedOverlayEdgeMargin;
+  }
+
   OverlayWindowPosition _resolveOverlayPositionForMode({
     required String currentMode,
     required String nextMode,
@@ -636,26 +649,36 @@ class HomeController extends GetxController with WidgetsBindingObserver {
         currentPosition.y +
         (currentGeometry.height / 2) -
         (nextGeometry.height / 2);
+    final edgeMargin = _overlayEdgeMarginForMode(nextMode);
     final targetX = anchorX < (screen.width / 2)
-        ? 12.0
-        : screen.width - nextGeometry.width - 12.0;
+        ? edgeMargin
+        : screen.width - nextGeometry.width - edgeMargin;
 
     return _clampOverlayPosition(
       OverlayWindowPosition(targetX, anchorY),
       nextGeometry,
+      mode: nextMode,
     );
   }
 
   OverlayWindowPosition _clampOverlayPosition(
     OverlayWindowPosition position,
-    _OverlayWindowGeometry geometry,
-  ) {
+    _OverlayWindowGeometry geometry, {
+    String? mode,
+  }) {
     final screen = _logicalScreenSize();
-    final maxX = math.max(12.0, screen.width - geometry.width - 12);
-    final maxY = math.max(12.0, screen.height - geometry.height - 12);
+    final edgeMargin = _overlayEdgeMarginForMode(mode ?? _overlayWindowMode);
+    final maxX = math.max(
+      edgeMargin,
+      screen.width - geometry.width - edgeMargin,
+    );
+    final maxY = math.max(
+      edgeMargin,
+      screen.height - geometry.height - edgeMargin,
+    );
     return OverlayWindowPosition(
-      position.x.clamp(12.0, maxX).toDouble(),
-      position.y.clamp(12.0, maxY).toDouble(),
+      position.x.clamp(edgeMargin, maxX).toDouble(),
+      position.y.clamp(edgeMargin, maxY).toDouble(),
     );
   }
 

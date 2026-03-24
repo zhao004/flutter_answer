@@ -42,7 +42,9 @@ object NativeOverlayController {
     private const val collapsedHeightDp = 72
     private const val expandedWidthDp = 288
     private const val expandedHeightDp = 272
-    private const val edgeMarginDp = 12f
+    private const val expandedEdgeMarginDp = 12f
+    private const val collapsedBubblePaddingDp = 8f
+    private const val collapsedEdgeMarginDp = 4f
 
     private const val colorTeal = 0xFF0C655F.toInt()
     private const val colorAmber = 0xFFE4A646.toInt()
@@ -88,7 +90,7 @@ object NativeOverlayController {
         appContext = context.applicationContext
         windowManager = appContext?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         if (positionXPx == 0f && positionYPx == 0f) {
-            positionXPx = dpToPx(edgeMarginDp)
+            positionXPx = dpToPx(expandedEdgeMarginDp)
             positionYPx = dpToPx(120f)
         }
     }
@@ -318,7 +320,12 @@ object NativeOverlayController {
                 marginEnd = dpToPx(2f).roundToInt()
             },
         )
-        container.setPadding(dpToPx(8f).roundToInt(), dpToPx(8f).roundToInt(), dpToPx(8f).roundToInt(), dpToPx(8f).roundToInt())
+        container.setPadding(
+            dpToPx(collapsedBubblePaddingDp).roundToInt(),
+            dpToPx(collapsedBubblePaddingDp).roundToInt(),
+            dpToPx(collapsedBubblePaddingDp).roundToInt(),
+            dpToPx(collapsedBubblePaddingDp).roundToInt(),
+        )
         container.setOnTouchListener(
             DragTouchListener(
                 allowSnap = true,
@@ -610,25 +617,26 @@ object NativeOverlayController {
             val anchorX = positionXPx + (currentSize.width / 2f)
             val anchorY = positionYPx + (currentSize.height / 2f) - (nextSize.height / 2f)
             positionXPx = if (anchorX < screen.width / 2f) {
-                edgeMarginPx()
+                edgeMarginPx(normalizedMode)
             } else {
-                screen.width - nextSize.width - edgeMarginPx()
+                screen.width - nextSize.width - edgeMarginPx(normalizedMode)
             }
             positionYPx = anchorY
             currentMode = normalizedMode
-            clampPositionInPlace(nextSize)
+            clampPositionInPlace(nextSize, normalizedMode)
             updateLayout(windowManager)
             renderOverlayUi()
             notifyOverlayStateChanged()
         }
     }
 
-    private fun clampPositionInPlace(size: OverlaySize) {
+    private fun clampPositionInPlace(size: OverlaySize, mode: String = currentMode) {
         val screen = screenSizePx()
-        val minX = edgeMarginPx()
-        val minY = edgeMarginPx()
-        val maxX = max(minX, screen.width - size.width - edgeMarginPx())
-        val maxY = max(minY, screen.height - size.height - edgeMarginPx())
+        val edgeMargin = edgeMarginPx(mode)
+        val minX = edgeMargin
+        val minY = edgeMargin
+        val maxX = max(minX, screen.width - size.width - edgeMargin)
+        val maxY = max(minY, screen.height - size.height - edgeMargin)
         positionXPx = positionXPx.coerceIn(minX, maxX)
         positionYPx = positionYPx.coerceIn(minY, maxY)
     }
@@ -646,7 +654,11 @@ object NativeOverlayController {
         return OverlaySize(metrics?.widthPixels ?: 1080, metrics?.heightPixels ?: 1920)
     }
 
-    private fun edgeMarginPx(): Float = dpToPx(edgeMarginDp)
+    private fun edgeMarginPx(mode: String = currentMode): Float {
+        // 缩小态气泡自身还有 8dp 内边距，外层边距需要更小，视觉上才能与展开态保持一致的贴边距离。
+        val edgeMarginDp = if (mode == modeCollapsed) collapsedEdgeMarginDp else expandedEdgeMarginDp
+        return dpToPx(edgeMarginDp)
+    }
 
     private fun dpToPx(value: Float): Float {
         val density = appContext?.resources?.displayMetrics?.density ?: 1f
@@ -823,10 +835,11 @@ object NativeOverlayController {
     private fun animateSnapToEdge() {
         val size = sizeForMode(currentMode)
         val screenWidth = screenSizePx().width.toFloat()
+        val edgeMargin = edgeMarginPx(currentMode)
         val targetX = if (positionXPx + (size.width / 2f) < screenWidth / 2f) {
-            edgeMarginPx()
+            edgeMargin
         } else {
-            screenWidth - size.width - edgeMarginPx()
+            screenWidth - size.width - edgeMargin
         }
         val startX = positionXPx
         snapAnimator?.cancel()
