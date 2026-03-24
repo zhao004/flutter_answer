@@ -23,6 +23,9 @@ object QuestionExtractor {
     private val optionPrefixCleanupPattern = Regex("^(?:选项\\s*)?(?:[A-Ha-h]|\\d{1,2}|[一二三四五六七八九十])[.、:：．\\)]\\s*")
     private val optionSelectedSuffixPattern = Regex("(?:[（(\\[]?\\s*)?(?:已选择|已选中|当前选择|已勾选|已作答)(?:\\s*[）)\\]]?)$")
     private val inputHintKeywords = listOf("请输入答案", "请填写答案", "未作答轻点两下来编辑", "轻点两下来编辑", "点击输入", "双击输入", "点击作答")
+    private val inputPlaceholderStandaloneKeywords = listOf("未作答", "未填写", "尚未作答")
+    private val inputPlaceholderContextKeywords = listOf("答案", "编辑", "输入", "轻点", "点击", "双击")
+    private val inputRelatedViewIdKeywords = listOf("answer", "editor", "ueditor", "edit")
     private val optionSelectedKeywords = listOf("已选择", "已选中", "当前选择", "已勾选", "已作答")
 
     private val nextActionKeywords = listOf("下一题", "下一步", "继续", "继续答题", "继续作答", "开始答题", "去答题", "进入答题", "下页", "完成")
@@ -208,7 +211,12 @@ object QuestionExtractor {
         val progress = extractQuestionProgress(snapshot)
         val finalQuestion = isFinalQuestion(rawQuestionIndex, progress)
         val currentAnswered = isCurrentQuestionAnswered(options, inputs)
-        val unansweredWarning = hasUnansweredWarning(snapshot, actions)
+        val unansweredWarning = hasUnansweredWarning(
+            snapshot = snapshot,
+            actions = actions,
+            inputRegionIds = inputRegionIds,
+            popupRegionIds = popupRegionIds,
+        )
         val submitReadyPage = isSubmitReadyPage(
             actions = actions,
             finalQuestion = finalQuestion,
@@ -1392,7 +1400,7 @@ object QuestionExtractor {
         if (blankIndexPattern.matches(normalized)) {
             return true
         }
-        return inputHintKeywords.any { keyword -> normalized.contains(keyword) }
+        return looksLikeInputPlaceholderText(normalized)
     }
 
     private fun sanitizeBlankHint(rawHint: String?, index: Int): String {
@@ -1493,10 +1501,52 @@ object QuestionExtractor {
         if (value.isBlank()) {
             return false
         }
-        if (inputHintKeywords.any { keyword -> value.contains(keyword) }) {
+        if (looksLikeInputPlaceholderText(value)) {
             return false
         }
         return !blankIndexPattern.matches(value)
+    }
+
+    private fun looksLikeInputPlaceholderText(text: String): Boolean {
+        val normalized = cleanText(text)
+        if (normalized.isBlank()) {
+            return false
+        }
+        if (blankIndexPattern.matches(normalized)) {
+            return true
+        }
+        if (inputHintKeywords.any { keyword -> normalized.contains(keyword) }) {
+            return true
+        }
+        if (inputPlaceholderStandaloneKeywords.any { keyword -> normalized == keyword }) {
+            return true
+        }
+        val hasUnansweredKeyword = unansweredWarningKeywords.any { keyword ->
+            normalized.contains(keyword)
+        }
+        if (!hasUnansweredKeyword) {
+            return false
+        }
+        return inputPlaceholderContextKeywords.any { keyword ->
+            normalized.contains(keyword)
+        }
+    }
+
+    private fun isInputRelatedElement(
+        element: UiElement,
+        inputRegionIds: Set<String>,
+    ): Boolean {
+        if (element.id in inputRegionIds || element.editable) {
+            return true
+        }
+        val viewId = element.viewId.orEmpty()
+        if (inputRelatedViewIdKeywords.any { keyword ->
+                viewId.contains(keyword, ignoreCase = true)
+            }
+        ) {
+            return true
+        }
+        return element.className.orEmpty().contains("EditText", ignoreCase = true)
     }
 
     private fun extractQuestionProgress(snapshot: UiSnapshot): QuestionProgress? {
@@ -1553,29 +1603,47 @@ object QuestionExtractor {
     private fun hasUnansweredWarning(
         snapshot: UiSnapshot,
         actions: List<QuestionAction>,
+        inputRegionIds: Set<String>,
+        popupRegionIds: Set<String>,
     ): Boolean {
-        val pageTexts = snapshot.elements
+        val warningTexts = snapshot.elements
             .asSequence()
-            .map { element -> cleanText(element.text ?: element.desc) }
-            .filter(String::isNotBlank)
+            .mapNotNull { element ->
+                val text = cleanText(element.text ?: element.desc)
+                if (text.isBlank()) {
+                    return@mapNotNull null
+                }
+                val hasWarningKeyword = unansweredWarningKeywords.any { keyword ->
+                    text.contains(keyword)
+                }
+                if (!hasWarningKeyword) {
+                    return@mapNotNull null
+                }
+                if (looksLikeInputPlaceholderText(text)) {
+                    return@mapNotNull null
+                }
+                if (isInputRelatedElement(element, inputRegionIds)) {
+                    return@mapNotNull null
+                }
+                text
+            }
             .toList()
-        if (pageTexts.isEmpty()) {
-            return false
-        }
-        val warningTexts = pageTexts.filter { text ->
-            unansweredWarningKeywords.any { keyword -> text.contains(keyword) } &&
-                inputHintKeywords.none { keyword -> text.contains(keyword) }
-        }
         if (warningTexts.isEmpty()) {
             return false
         }
-        val hasSubmitContext = actions.any { action ->
-            action.kind == "submit" || action.kind == "confirm" || action.kind == "cancel"
-        } || warningTexts.any { text ->
+        val hasConfirmLikeAction = actions.any { action ->
+            action.kind == "submit" || action.kind == "confirm"
+        }
+        val hasCancelLikeAction = actions.any { action ->
+            action.kind == "cancel"
+        }
+        val hasDialogLikeWarningText = warningTexts.any { text ->
             submitDialogKeywords.any { keyword -> text.contains(keyword) } ||
                 confirmActionKeywords.any { keyword -> text.contains(keyword) }
         }
-        return hasSubmitContext
+        return popupRegionIds.isNotEmpty() ||
+            (hasConfirmLikeAction && hasCancelLikeAction) ||
+            hasDialogLikeWarningText
     }
 
     private fun isSubmitReadyPage(

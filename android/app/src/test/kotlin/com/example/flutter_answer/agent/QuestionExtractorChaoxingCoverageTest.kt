@@ -63,6 +63,22 @@ class QuestionExtractorChaoxingCoverageTest {
     }
 
     @Test
+    fun `extract final fill blank page with submit footer does not confuse input placeholder as submit warning`() {
+        val context = QuestionExtractor.extract(finalFillBlankWithSubmitFooterSnapshot())
+
+        assertEquals("flutter由哪个公司发布？", context.question)
+        assertEquals(QuestionPageStage.question, context.pageStage)
+        assertEquals(1, context.inputFields.size)
+        assertEquals(listOf("第1空"), context.inputFields.map(InputFieldRef::hint))
+        assertTrue(context.actions.any { action -> action.kind == "submit" && action.text == "提交" })
+        assertEquals(1.0, context.structureSignals["finalQuestionSignal"])
+        assertEquals(0.0, context.structureSignals["answeredSignal"])
+        assertEquals(0.0, context.structureSignals["submitReadySignal"])
+        assertEquals(0.0, context.structureSignals["submitWarningSignal"])
+        assertEquals(0.0, context.structureSignals["unansweredWarningSignal"])
+    }
+
+    @Test
     fun `extract short answer page ignores editor helper and toolbar noise`() {
         val context = QuestionExtractor.extract(shortAnswerSnapshot())
 
@@ -678,6 +694,67 @@ class QuestionExtractorChaoxingCoverageTest {
                     text = "提交",
                     className = "android.widget.TextView",
                     bounds = listOf(720, 1416, 1241, 1592),
+                ),
+            ),
+        )
+    }
+
+    private fun finalFillBlankWithSubmitFooterSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "questionType",
+                    text = "5. 填空题",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 280, 1387, 512),
+                ),
+                element(
+                    id = "questionLabel",
+                    text = "题干",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 508, 1387, 745),
+                ),
+                element(
+                    id = "questionText",
+                    text = "flutter由哪个公司发布？",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 538, 980, 617),
+                ),
+                element(
+                    id = "blankLabel",
+                    text = "第1空",
+                    className = "android.widget.TextView",
+                    bounds = listOf(52, 741, 220, 906),
+                ),
+                element(
+                    id = "blankHelper",
+                    text = "未填写答案",
+                    className = "android.view.View",
+                    viewId = "ananas-editor-answer1",
+                    bounds = listOf(52, 906, 1387, 1135),
+                ),
+                element(
+                    id = "blankInput",
+                    text = "",
+                    desc = "未填写答案",
+                    className = "android.widget.EditText",
+                    viewId = "ueditor_0",
+                    editable = true,
+                    bounds = listOf(75, 925, 1368, 1078),
+                ),
+                element(
+                    id = "answerCard",
+                    text = "答题卡 共5题 第5题",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(517, 1288, 922, 1483),
+                ),
+                element(
+                    id = "submitButton",
+                    text = "提交",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(918, 1288, 1327, 1483),
                 ),
             ),
         )
