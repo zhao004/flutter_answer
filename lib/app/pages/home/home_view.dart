@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import '../../services/agent_diagnostic_hint.dart';
 import 'home_controller.dart';
 
+/// 首页视图，仅保留权限、配置、诊断和日志四个核心区域，避免首屏层级过深。
 class HomeView extends GetView<HomeController> {
   const HomeView({super.key});
 
@@ -30,11 +31,9 @@ class HomeView extends GetView<HomeController> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _HeaderCard(controller: controller),
-                        const SizedBox(height: 16),
                         _MainPanels(controller: controller),
                         _HintSection(controller: controller),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         Obx(() => _LogsCard(logs: controller.logs.toList())),
                       ],
                     ),
@@ -49,241 +48,173 @@ class HomeView extends GetView<HomeController> {
   }
 }
 
-class _HeaderCard extends StatelessWidget {
-  const _HeaderCard({required this.controller});
+/// 首页头部摘要卡片，将运行状态和关键配置集中在同一视觉区域，减少用户视线跳转。
+// class _HeaderCard extends StatelessWidget {
+//   const _HeaderCard({required this.controller});
+//
+//   final HomeController controller;
+//
+//   @override
+//   Widget build(BuildContext context) {
+//     return Obx(() {
+//       final theme = Theme.of(context);
+//       final textTheme = theme.textTheme;
+//       final accessibilityEnabled = controller.serviceStatus['enabled'] == true;
+//       final overlayPermissionGranted =
+//           controller.overlayPermissionGranted.value;
+//       final overlayActive = controller.overlayActive.value;
+//       final hasApiKey = controller.agentConfig['hasApiKey'] == true;
+//       final providerUrl =
+//           controller.agentConfig['providerUrl']?.toString().trim() ?? '';
+//       final modelValue =
+//           controller.agentConfig['model']?.toString().trim() ?? '';
+//       final model = modelValue.isEmpty ? 'gpt-5-mini' : modelValue;
+//       final runStatus =
+//           controller.agentRunStatus['status']?.toString() ?? 'idle';
+//       final runMessage =
+//           controller.agentRunStatus['message']?.toString().trim() ?? '等待启动';
+//       final runMeta = _runStatusMeta(theme.colorScheme, runStatus);
+//
+//       return Card(
+//         child: Padding(
+//           padding: const EdgeInsets.all(20),
+//           child: Column(
+//             crossAxisAlignment: CrossAxisAlignment.start,
+//             children: [
+//               LayoutBuilder(
+//                 builder: (context, constraints) {
+//                   final wide = constraints.maxWidth >= 560;
+//                   final title = Text(
+//                     'AI自动答题',
+//                     style: textTheme.headlineSmall?.copyWith(
+//                       color: theme.colorScheme.primary,
+//                       fontWeight: FontWeight.w800,
+//                       height: 1.1,
+//                     ),
+//                   );
+//
+//                   if (!wide) {
+//                     return Column(
+//                       crossAxisAlignment: CrossAxisAlignment.start,
+//                       children: [
+//                         title,
+//                         const SizedBox(height: 12),
+//                         _StatusPill(
+//                           label: runMeta.$1,
+//                           backgroundColor: runMeta.$2,
+//                           foregroundColor: runMeta.$3,
+//                         ),
+//                       ],
+//                     );
+//                   }
+//
+//                   return Row(
+//                     children: [
+//                       Expanded(child: title),
+//                       _StatusPill(
+//                         label: runMeta.$1,
+//                         backgroundColor: runMeta.$2,
+//                         foregroundColor: runMeta.$3,
+//                       ),
+//                     ],
+//                   );
+//                 },
+//               ),
+//               const SizedBox(height: 10),
+//               Text(
+//                 '首页仅保留最常用的权限、配置和运行状态，减少查找路径，常见操作都能在一屏内完成。',
+//                 style: textTheme.bodyMedium?.copyWith(
+//                   color: theme.colorScheme.onSurfaceVariant,
+//                   height: 1.55,
+//                 ),
+//               ),
+//               const SizedBox(height: 16),
+//               Wrap(
+//                 spacing: 10,
+//                 runSpacing: 10,
+//                 children: [
+//                   _StatusBadge(
+//                     icon: accessibilityEnabled
+//                         ? Icons.verified_user_outlined
+//                         : Icons.privacy_tip_outlined,
+//                     label: accessibilityEnabled ? '无障碍已开启' : '无障碍待开启',
+//                   ),
+//                   _StatusBadge(
+//                     icon: overlayActive
+//                         ? Icons.picture_in_picture_alt_outlined
+//                         : Icons.layers_outlined,
+//                     label: overlayActive
+//                         ? '悬浮窗显示中'
+//                         : overlayPermissionGranted
+//                         ? '悬浮窗已授权'
+//                         : '悬浮窗待授权',
+//                   ),
+//                   _StatusBadge(
+//                     icon: hasApiKey
+//                         ? Icons.key_outlined
+//                         : Icons.key_off_outlined,
+//                     label: hasApiKey ? '密钥已保存' : '密钥待填写',
+//                   ),
+//                 ],
+//               ),
+//               const SizedBox(height: 16),
+//               Container(
+//                 width: double.infinity,
+//                 padding: const EdgeInsets.all(16),
+//                 decoration: BoxDecoration(
+//                   color: theme.colorScheme.primaryContainer.withValues(
+//                     alpha: 0.32,
+//                   ),
+//                   borderRadius: BorderRadius.circular(20),
+//                   border: Border.all(
+//                     color: theme.colorScheme.outlineVariant.withValues(
+//                       alpha: 0.8,
+//                     ),
+//                   ),
+//                 ),
+//                 child: Column(
+//                   crossAxisAlignment: CrossAxisAlignment.start,
+//                   children: [
+//                     Text(
+//                       '当前状态',
+//                       style: textTheme.titleMedium?.copyWith(
+//                         fontWeight: FontWeight.w800,
+//                       ),
+//                     ),
+//                     const SizedBox(height: 10),
+//                     Text(
+//                       runMessage.isEmpty ? '等待启动' : runMessage,
+//                       maxLines: 4,
+//                       overflow: TextOverflow.ellipsis,
+//                       style: textTheme.bodyMedium?.copyWith(
+//                         color: theme.colorScheme.onSurface,
+//                         height: 1.5,
+//                       ),
+//                     ),
+//                   ],
+//                 ),
+//               ),
+//               const SizedBox(height: 16),
+//               Wrap(
+//                 spacing: 10,
+//                 runSpacing: 10,
+//                 children: [
+//                   _InfoPill(
+//                     label: '提供商',
+//                     value: providerUrl.isEmpty ? '未填写' : '已填写',
+//                   ),
+//                   _InfoPill(label: '模型', value: model),
+//                 ],
+//               ),
+//             ],
+//           ),
+//         ),
+//       );
+//     });
+//   }
+// }
 
-  final HomeController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Obx(() {
-      final accessibilityEnabled = controller.serviceStatus['enabled'] == true;
-      final overlayPermissionGranted =
-          controller.overlayPermissionGranted.value;
-      final overlayActive = controller.overlayActive.value;
-      final hasApiKey = controller.agentConfig['hasApiKey'] == true;
-      final providerUrl =
-          controller.agentConfig['providerUrl']?.toString().trim() ?? '';
-      final modelValue =
-          controller.agentConfig['model']?.toString().trim() ?? '';
-      final model = modelValue.isEmpty ? 'gpt-5-mini' : modelValue;
-      final runStatus =
-          controller.agentRunStatus['status']?.toString() ?? 'idle';
-      final runMessage =
-          controller.agentRunStatus['message']?.toString().trim() ?? '等待启动';
-      final runMeta = _runStatusMeta(theme.colorScheme, runStatus);
-
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 760;
-              final summaryCard = _HeaderSummary(
-                statusLabel: runMeta.$1,
-                statusBackground: runMeta.$2,
-                statusForeground: runMeta.$3,
-                runMessage: runMessage.isEmpty ? '等待启动' : runMessage,
-                providerReady: providerUrl.isNotEmpty,
-                model: model,
-              );
-
-              if (!wide) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _HeaderIntro(
-                      accessibilityEnabled: accessibilityEnabled,
-                      overlayPermissionGranted: overlayPermissionGranted,
-                      overlayActive: overlayActive,
-                      hasApiKey: hasApiKey,
-                    ),
-                    const SizedBox(height: 16),
-                    summaryCard,
-                  ],
-                );
-              }
-
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: _HeaderIntro(
-                      accessibilityEnabled: accessibilityEnabled,
-                      overlayPermissionGranted: overlayPermissionGranted,
-                      overlayActive: overlayActive,
-                      hasApiKey: hasApiKey,
-                    ),
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(flex: 2, child: summaryCard),
-                ],
-              );
-            },
-          ),
-        ),
-      );
-    });
-  }
-}
-
-class _HeaderIntro extends StatelessWidget {
-  const _HeaderIntro({
-    required this.accessibilityEnabled,
-    required this.overlayPermissionGranted,
-    required this.overlayActive,
-    required this.hasApiKey,
-  });
-
-  final bool accessibilityEnabled;
-  final bool overlayPermissionGranted;
-  final bool overlayActive;
-  final bool hasApiKey;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final textTheme = theme.textTheme;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.primaryContainer.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(
-            '简约首页',
-            style: textTheme.labelLarge?.copyWith(
-              color: theme.colorScheme.primary,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text(
-          'AI自动答题',
-          style: textTheme.headlineSmall?.copyWith(
-            color: theme.colorScheme.primary,
-            fontWeight: FontWeight.w800,
-            height: 1.1,
-          ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          '现在只保留最常用的信息和入口，首页会更清爽，操作也更直接。',
-          style: textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-            height: 1.55,
-          ),
-        ),
-        const SizedBox(height: 16),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            _StatusBadge(
-              icon: accessibilityEnabled
-                  ? Icons.verified_user_outlined
-                  : Icons.privacy_tip_outlined,
-              label: accessibilityEnabled ? '无障碍已开启' : '无障碍待开启',
-            ),
-            _StatusBadge(
-              icon: overlayActive
-                  ? Icons.picture_in_picture_alt_outlined
-                  : Icons.layers_outlined,
-              label: overlayActive
-                  ? '悬浮窗显示中'
-                  : overlayPermissionGranted
-                  ? '悬浮窗已授权'
-                  : '悬浮窗待授权',
-            ),
-            _StatusBadge(
-              icon: hasApiKey ? Icons.key_outlined : Icons.key_off_outlined,
-              label: hasApiKey ? '密钥已保存' : '密钥待填写',
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _HeaderSummary extends StatelessWidget {
-  const _HeaderSummary({
-    required this.statusLabel,
-    required this.statusBackground,
-    required this.statusForeground,
-    required this.runMessage,
-    required this.providerReady,
-    required this.model,
-  });
-
-  final String statusLabel;
-  final Color statusBackground;
-  final Color statusForeground;
-  final String runMessage;
-  final bool providerReady;
-  final String model;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final textTheme = Theme.of(context).textTheme;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer.withValues(alpha: 0.32),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.8),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(
-                '当前状态',
-                style: textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const Spacer(),
-              _StatusPill(
-                label: statusLabel,
-                backgroundColor: statusBackground,
-                foregroundColor: statusForeground,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            runMessage,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-            style: textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurface,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 14),
-          _HeaderMetaItem(label: '提供商', value: providerReady ? '已填写' : '未填写'),
-          const SizedBox(height: 8),
-          _HeaderMetaItem(label: '模型', value: model),
-        ],
-      ),
-    );
-  }
-}
-
+/// 首页主操作区，保留权限卡片和配置卡片，便于用户按任务顺序完成设置。
 class _MainPanels extends StatelessWidget {
   const _MainPanels({required this.controller});
 
@@ -300,7 +231,7 @@ class _MainPanels extends StatelessWidget {
         if (!wide) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [accessCard, const SizedBox(height: 16), configCard],
+            children: [accessCard, const SizedBox(height: 12), configCard],
           );
         }
 
@@ -308,7 +239,7 @@ class _MainPanels extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(child: accessCard),
-            const SizedBox(width: 16),
+            const SizedBox(width: 12),
             Expanded(flex: 2, child: configCard),
           ],
         );
@@ -935,44 +866,6 @@ class _StatusPill extends StatelessWidget {
           fontWeight: FontWeight.w800,
         ),
       ),
-    );
-  }
-}
-
-class _HeaderMetaItem extends StatelessWidget {
-  const _HeaderMetaItem({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Row(
-      children: [
-        SizedBox(
-          width: 56,
-          child: Text(
-            label,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurface,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
