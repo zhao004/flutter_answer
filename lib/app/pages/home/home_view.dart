@@ -48,172 +48,6 @@ class HomeView extends GetView<HomeController> {
   }
 }
 
-/// 首页头部摘要卡片，将运行状态和关键配置集中在同一视觉区域，减少用户视线跳转。
-// class _HeaderCard extends StatelessWidget {
-//   const _HeaderCard({required this.controller});
-//
-//   final HomeController controller;
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Obx(() {
-//       final theme = Theme.of(context);
-//       final textTheme = theme.textTheme;
-//       final accessibilityEnabled = controller.serviceStatus['enabled'] == true;
-//       final overlayPermissionGranted =
-//           controller.overlayPermissionGranted.value;
-//       final overlayActive = controller.overlayActive.value;
-//       final hasApiKey = controller.agentConfig['hasApiKey'] == true;
-//       final providerUrl =
-//           controller.agentConfig['providerUrl']?.toString().trim() ?? '';
-//       final modelValue =
-//           controller.agentConfig['model']?.toString().trim() ?? '';
-//       final model = modelValue.isEmpty ? 'gpt-5-mini' : modelValue;
-//       final runStatus =
-//           controller.agentRunStatus['status']?.toString() ?? 'idle';
-//       final runMessage =
-//           controller.agentRunStatus['message']?.toString().trim() ?? '等待启动';
-//       final runMeta = _runStatusMeta(theme.colorScheme, runStatus);
-//
-//       return Card(
-//         child: Padding(
-//           padding: const EdgeInsets.all(20),
-//           child: Column(
-//             crossAxisAlignment: CrossAxisAlignment.start,
-//             children: [
-//               LayoutBuilder(
-//                 builder: (context, constraints) {
-//                   final wide = constraints.maxWidth >= 560;
-//                   final title = Text(
-//                     'AI自动答题',
-//                     style: textTheme.headlineSmall?.copyWith(
-//                       color: theme.colorScheme.primary,
-//                       fontWeight: FontWeight.w800,
-//                       height: 1.1,
-//                     ),
-//                   );
-//
-//                   if (!wide) {
-//                     return Column(
-//                       crossAxisAlignment: CrossAxisAlignment.start,
-//                       children: [
-//                         title,
-//                         const SizedBox(height: 12),
-//                         _StatusPill(
-//                           label: runMeta.$1,
-//                           backgroundColor: runMeta.$2,
-//                           foregroundColor: runMeta.$3,
-//                         ),
-//                       ],
-//                     );
-//                   }
-//
-//                   return Row(
-//                     children: [
-//                       Expanded(child: title),
-//                       _StatusPill(
-//                         label: runMeta.$1,
-//                         backgroundColor: runMeta.$2,
-//                         foregroundColor: runMeta.$3,
-//                       ),
-//                     ],
-//                   );
-//                 },
-//               ),
-//               const SizedBox(height: 10),
-//               Text(
-//                 '首页仅保留最常用的权限、配置和运行状态，减少查找路径，常见操作都能在一屏内完成。',
-//                 style: textTheme.bodyMedium?.copyWith(
-//                   color: theme.colorScheme.onSurfaceVariant,
-//                   height: 1.55,
-//                 ),
-//               ),
-//               const SizedBox(height: 16),
-//               Wrap(
-//                 spacing: 10,
-//                 runSpacing: 10,
-//                 children: [
-//                   _StatusBadge(
-//                     icon: accessibilityEnabled
-//                         ? Icons.verified_user_outlined
-//                         : Icons.privacy_tip_outlined,
-//                     label: accessibilityEnabled ? '无障碍已开启' : '无障碍待开启',
-//                   ),
-//                   _StatusBadge(
-//                     icon: overlayActive
-//                         ? Icons.picture_in_picture_alt_outlined
-//                         : Icons.layers_outlined,
-//                     label: overlayActive
-//                         ? '悬浮窗显示中'
-//                         : overlayPermissionGranted
-//                         ? '悬浮窗已授权'
-//                         : '悬浮窗待授权',
-//                   ),
-//                   _StatusBadge(
-//                     icon: hasApiKey
-//                         ? Icons.key_outlined
-//                         : Icons.key_off_outlined,
-//                     label: hasApiKey ? '密钥已保存' : '密钥待填写',
-//                   ),
-//                 ],
-//               ),
-//               const SizedBox(height: 16),
-//               Container(
-//                 width: double.infinity,
-//                 padding: const EdgeInsets.all(16),
-//                 decoration: BoxDecoration(
-//                   color: theme.colorScheme.primaryContainer.withValues(
-//                     alpha: 0.32,
-//                   ),
-//                   borderRadius: BorderRadius.circular(20),
-//                   border: Border.all(
-//                     color: theme.colorScheme.outlineVariant.withValues(
-//                       alpha: 0.8,
-//                     ),
-//                   ),
-//                 ),
-//                 child: Column(
-//                   crossAxisAlignment: CrossAxisAlignment.start,
-//                   children: [
-//                     Text(
-//                       '当前状态',
-//                       style: textTheme.titleMedium?.copyWith(
-//                         fontWeight: FontWeight.w800,
-//                       ),
-//                     ),
-//                     const SizedBox(height: 10),
-//                     Text(
-//                       runMessage.isEmpty ? '等待启动' : runMessage,
-//                       maxLines: 4,
-//                       overflow: TextOverflow.ellipsis,
-//                       style: textTheme.bodyMedium?.copyWith(
-//                         color: theme.colorScheme.onSurface,
-//                         height: 1.5,
-//                       ),
-//                     ),
-//                   ],
-//                 ),
-//               ),
-//               const SizedBox(height: 16),
-//               Wrap(
-//                 spacing: 10,
-//                 runSpacing: 10,
-//                 children: [
-//                   _InfoPill(
-//                     label: '提供商',
-//                     value: providerUrl.isEmpty ? '未填写' : '已填写',
-//                   ),
-//                   _InfoPill(label: '模型', value: model),
-//                 ],
-//               ),
-//             ],
-//           ),
-//         ),
-//       );
-//     });
-//   }
-// }
-
 /// 首页主操作区，保留权限卡片和配置卡片，便于用户按任务顺序完成设置。
 class _MainPanels extends StatelessWidget {
   const _MainPanels({required this.controller});
@@ -255,54 +89,85 @@ class _AccessCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    return _SectionCard(
+      title: '系统状态',
+      subtitle: '完成权限授权后，悬浮窗和自动化能力才能稳定工作。',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _OverlayPermissionSwitch(controller: controller),
+          const SizedBox(height: 12),
+          _AccessibilityServiceSwitch(controller: controller),
+          const SizedBox(height: 12),
+          _OverlayVisibilitySwitch(controller: controller),
+        ],
+      ),
+    );
+  }
+}
 
+/// 将每个开关拆成独立响应单元，避免某一项状态变化时整张卡片一起重建，造成其他开关闪动。
+class _OverlayPermissionSwitch extends StatelessWidget {
+  const _OverlayPermissionSwitch({required this.controller});
+
+  final HomeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      return _SwitchTile(
+        icon: Icons.layers_outlined,
+        title: '悬浮窗权限',
+        subtitle: controller.overlayPermissionGranted.value
+            ? '已授权，可以直接打开悬浮窗。'
+            : '开启后才能显示悬浮窗控制面板。',
+        value: controller.overlayPermissionGranted.value,
+        enabled: !controller.overlayPermissionBusy.value,
+        onChanged: controller.toggleOverlayPermission,
+      );
+    });
+  }
+}
+
+class _AccessibilityServiceSwitch extends StatelessWidget {
+  const _AccessibilityServiceSwitch({required this.controller});
+
+  final HomeController controller;
+
+  @override
+  Widget build(BuildContext context) {
     return Obx(() {
       final accessibilityEnabled = controller.serviceStatus['enabled'] == true;
-      final hasActiveWindow =
-          controller.serviceStatus['hasActiveWindow'] == true;
-      final isBusy = controller.isBusy.value;
 
-      return _SectionCard(
-        title: '系统状态',
-        subtitle: '完成权限授权后，悬浮窗和自动化能力才能稳定工作。',
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _SwitchTile(
-              icon: Icons.layers_outlined,
-              title: '悬浮窗权限',
-              subtitle: controller.overlayPermissionGranted.value
-                  ? '已授权，可以直接打开悬浮窗。'
-                  : '开启后才能显示悬浮窗控制面板。',
-              value: controller.overlayPermissionGranted.value,
-              enabled: !isBusy,
-              onChanged: controller.toggleOverlayPermission,
-            ),
-            const SizedBox(height: 12),
-            _SwitchTile(
-              icon: Icons.settings_accessibility,
-              title: '无障碍服务',
-              subtitle: accessibilityEnabled
-                  ? '已开启，切换时会跳转到系统设置。'
-                  : '开启后才能读取当前页面和执行自动操作。',
-              value: accessibilityEnabled,
-              enabled: !isBusy,
-              onChanged: controller.toggleAccessibilityService,
-            ),
-            const SizedBox(height: 12),
-            _SwitchTile(
-              icon: Icons.picture_in_picture_alt_outlined,
-              title: '显示悬浮窗',
-              subtitle: controller.overlayActive.value
-                  ? '悬浮窗显示中。'
-                  : '开启后会显示控制面板。',
-              value: controller.overlayActive.value,
-              enabled: !isBusy,
-              onChanged: controller.toggleOverlayVisibility,
-            ),
-          ],
-        ),
+      return _SwitchTile(
+        icon: Icons.settings_accessibility,
+        title: '无障碍服务',
+        subtitle: accessibilityEnabled
+            ? '已开启，切换时会跳转到系统设置。'
+            : '开启后才能读取当前页面和执行自动操作。',
+        value: accessibilityEnabled,
+        enabled: !controller.accessibilityServiceBusy.value,
+        onChanged: controller.toggleAccessibilityService,
+      );
+    });
+  }
+}
+
+class _OverlayVisibilitySwitch extends StatelessWidget {
+  const _OverlayVisibilitySwitch({required this.controller});
+
+  final HomeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      return _SwitchTile(
+        icon: Icons.picture_in_picture_alt_outlined,
+        title: '显示悬浮窗',
+        subtitle: controller.overlayActive.value ? '悬浮窗显示中。' : '开启后会显示控制面板。',
+        value: controller.overlayActive.value,
+        enabled: !controller.overlayVisibilityBusy.value,
+        onChanged: controller.toggleOverlayVisibility,
       );
     });
   }
@@ -317,11 +182,6 @@ class _AgentConfigCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Obx(() {
       final hasApiKey = controller.agentConfig['hasApiKey'] == true;
-      final providerUrl =
-          controller.agentConfig['providerUrl']?.toString().trim() ?? '';
-      final modelValue =
-          controller.agentConfig['model']?.toString().trim() ?? '';
-      final model = modelValue.isEmpty ? 'gpt-5-mini' : modelValue;
 
       return _SectionCard(
         title: 'Agent 配置',
@@ -504,6 +364,7 @@ class _LogsCard extends StatefulWidget {
 }
 
 class _LogsCardState extends State<_LogsCard> {
+  static const _logPanelBackgroundColor = Color(0xFFEFF7FF);
   bool _expanded = false;
 
   @override
@@ -540,7 +401,7 @@ class _LogsCardState extends State<_LogsCard> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF7F1F0),
+                    color: _logPanelBackgroundColor,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
                       color: theme.colorScheme.outlineVariant.withValues(
@@ -787,23 +648,4 @@ class _HintStep extends StatelessWidget {
       ],
     );
   }
-}
-
-(String, Color, Color) _runStatusMeta(ColorScheme colorScheme, String status) {
-  return switch (status) {
-    'running' ||
-    'starting' => ('运行中', colorScheme.primary, colorScheme.onPrimary),
-    'stopping' => ('停止中', const Color(0xFFFFE6B3), const Color(0xFF7A4B00)),
-    'failed' => (
-      '失败',
-      colorScheme.errorContainer,
-      colorScheme.onErrorContainer,
-    ),
-    'completed' => ('已完成', const Color(0xFFD8F3DC), const Color(0xFF1B5E20)),
-    _ => (
-      '待启动',
-      colorScheme.surfaceContainerHighest,
-      colorScheme.onSurfaceVariant,
-    ),
-  };
 }

@@ -62,6 +62,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final overlayPermissionGranted = false.obs;
   final overlayActive = false.obs;
   final isBusy = false.obs;
+  final overlayPermissionBusy = false.obs;
+  final accessibilityServiceBusy = false.obs;
+  final overlayVisibilityBusy = false.obs;
 
   StreamSubscription<NativePlatformEvent>? _eventSubscription;
   StreamSubscription<Map<String, dynamic>>? _overlaySubscription;
@@ -110,10 +113,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      if (_systemSettingsFlowActive || isBusy.value) {
-        _systemSettingsFlowActive = false;
-        isBusy.value = false;
-      }
+      _resetTransientBusyState();
       unawaited(_refreshSystemState());
     }
   }
@@ -153,7 +153,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       _appendLog('info', '正在打开无障碍设置页面。');
       final payload = await _platformGateway.openAccessibilitySettings();
       _setPayload(payload);
-    });
+    }, busyFlag: accessibilityServiceBusy);
   }
 
   Future<void> toggleAccessibilityService(bool enabled) async {
@@ -346,11 +346,12 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   }
 
   Future<void> requestOverlayPermission() async {
-    if (_systemSettingsFlowActive) {
+    if (_systemSettingsFlowActive || overlayPermissionBusy.value) {
       return;
     }
 
     _systemSettingsFlowActive = true;
+    overlayPermissionBusy.value = true;
     await _dismissOverlayForSystemSettings();
     _appendLog('info', '正在打开系统悬浮窗权限页面。');
     try {
@@ -367,6 +368,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       await syncOverlayState();
     } finally {
       _systemSettingsFlowActive = false;
+      overlayPermissionBusy.value = false;
     }
   }
 
@@ -394,17 +396,15 @@ class HomeController extends GetxController with WidgetsBindingObserver {
 
       await _showOverlayWindow();
       await syncOverlayState();
-    });
+    }, busyFlag: overlayVisibilityBusy);
   }
 
   Future<void> closeOverlay() async {
-    try {
+    await _runAction(() async {
       await _overlayPlatformGateway.closeOverlay();
       overlayActive.value = false;
       await _broadcastOverlaySnapshot();
-    } catch (error) {
-      _appendLog('error', error.toString());
-    }
+    }, busyFlag: overlayVisibilityBusy);
   }
 
   Future<void> toggleOverlayVisibility(bool visible) async {
@@ -528,11 +528,16 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _runAction(Future<void> Function() action) async {
-    if (isBusy.value) {
+  /// 将“当前开关是否忙碌”单独建模，避免一个开关的异步过程把其他开关一起切到禁用态。
+  Future<void> _runAction(
+    Future<void> Function() action, {
+    RxBool? busyFlag,
+  }) async {
+    if (isBusy.value || (busyFlag?.value ?? false)) {
       return;
     }
     isBusy.value = true;
+    busyFlag?.value = true;
     try {
       await action();
     } catch (error) {
@@ -543,6 +548,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       _setPayload(payload);
       _appendLog('error', error.toString());
     } finally {
+      busyFlag?.value = false;
       isBusy.value = false;
     }
   }
@@ -720,16 +726,21 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _launchSystemSettingsFlow(Future<void> Function() action) async {
-    if (_systemSettingsFlowActive) {
+  Future<void> _launchSystemSettingsFlow(
+    Future<void> Function() action, {
+    RxBool? busyFlag,
+  }) async {
+    if (_systemSettingsFlowActive || (busyFlag?.value ?? false)) {
       return;
     }
 
     _systemSettingsFlowActive = true;
+    busyFlag?.value = true;
     try {
       await action();
     } catch (error) {
       _systemSettingsFlowActive = false;
+      busyFlag?.value = false;
       final payload = <String, dynamic>{
         'ok': false,
         'message': error.toString(),
@@ -737,6 +748,15 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       _setPayload(payload);
       _appendLog('error', error.toString());
     }
+  }
+
+  /// 系统设置页返回后统一清理瞬时忙碌态，避免开关残留在禁用视觉状态。
+  void _resetTransientBusyState() {
+    _systemSettingsFlowActive = false;
+    isBusy.value = false;
+    overlayPermissionBusy.value = false;
+    accessibilityServiceBusy.value = false;
+    overlayVisibilityBusy.value = false;
   }
 
   void _syncAgentConfig(Map<String, dynamic> payload) {
