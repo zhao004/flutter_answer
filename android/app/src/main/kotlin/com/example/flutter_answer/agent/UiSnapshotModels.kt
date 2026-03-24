@@ -1,5 +1,14 @@
 package com.example.flutter_answer.agent
 
+object QuestionPageStage {
+    const val unknown = "unknown"
+    const val resumeEntry = "resume_entry"
+    const val question = "question"
+    const val submitReady = "submit_ready"
+    const val submitDialog = "submit_dialog"
+    const val submitWarning = "submit_warning"
+}
+
 data class UiElement(
     val id: String,
     val text: String?,
@@ -142,6 +151,7 @@ data class QuestionCacheProbe(
 
 data class QuestionContext(
     val contextSignature: String,
+    val pageStage: String,
     val questionIndex: Int?,
     val question: String,
     val normalizedQuestion: String,
@@ -161,6 +171,7 @@ data class QuestionContext(
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "contextSignature" to contextSignature,
+        "pageStage" to pageStage,
         "questionIndex" to questionIndex,
         "question" to question,
         "normalizedQuestion" to normalizedQuestion,

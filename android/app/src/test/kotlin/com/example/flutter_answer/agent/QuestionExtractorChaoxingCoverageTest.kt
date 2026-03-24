@@ -23,11 +23,13 @@ class QuestionExtractorChaoxingCoverageTest {
         val context = QuestionExtractor.extract(fillBlankSnapshot())
 
         assertEquals("flutter哪个企业发布的？", context.question)
+        assertEquals(QuestionPageStage.question, context.pageStage)
         assertEquals(1, context.inputFields.size)
         assertEquals(listOf("第1空"), context.inputFields.map(InputFieldRef::hint))
         assertEquals(listOf("第1空"), context.blanks.map(QuestionBlank::hint))
         assertTrue(context.actions.any { action -> action.kind == "next" && action.text.contains("下一题") })
         assertTrue(context.regions.any { region -> region.region == "input" && "blankLabel" in region.elementIds })
+        assertEquals(0.0, context.structureSignals["unansweredWarningSignal"])
         assertFalse(context.question.contains("请输入答案"))
         assertFalse(context.question.contains("未作答"))
     }
@@ -65,9 +67,11 @@ class QuestionExtractorChaoxingCoverageTest {
         val context = QuestionExtractor.extract(shortAnswerSnapshot())
 
         assertEquals("介绍一下flutter框架", context.question)
+        assertEquals(QuestionPageStage.question, context.pageStage)
         assertEquals(1, context.inputFields.size)
         assertTrue(context.actions.any { action -> action.kind == "next" && action.text.contains("下一题") })
         assertTrue(context.regions.any { region -> region.region == "input" && "uploadIcon" in region.elementIds })
+        assertEquals(0.0, context.structureSignals["unansweredWarningSignal"])
         assertFalse(context.question.contains("未作答"))
         assertFalse(context.question.contains("add"))
         assertFalse(context.question.contains("photo"))
@@ -102,6 +106,7 @@ class QuestionExtractorChaoxingCoverageTest {
         val nextAction = context.actions.firstOrNull { action -> action.kind == "next" }
         assertTrue(nextAction != null)
         assertEquals("continueAnswerButton", nextAction?.id)
+        assertEquals(QuestionPageStage.resumeEntry, context.pageStage)
         assertEquals("", context.question)
         assertFalse(context.needConfirm)
         assertEquals(1.0, context.structureSignals["resumeEntrySignal"])
@@ -114,6 +119,7 @@ class QuestionExtractorChaoxingCoverageTest {
         val nextAction = context.actions.firstOrNull { action -> action.kind == "next" }
         assertTrue(nextAction != null)
         assertEquals("action:next", nextAction?.id)
+        assertEquals(QuestionPageStage.resumeEntry, context.pageStage)
     }
 
     @Test
@@ -123,6 +129,7 @@ class QuestionExtractorChaoxingCoverageTest {
         val submitAction = context.actions.firstOrNull { action -> action.kind == "submit" }
         assertTrue(submitAction != null)
         assertEquals("submitButton", submitAction?.id)
+        assertEquals(QuestionPageStage.submitReady, context.pageStage)
         assertTrue(context.options.any { option -> option.label == "A" && option.text == "对" && option.checked })
         assertEquals(1.0, context.structureSignals["finalQuestionSignal"])
         assertEquals(1.0, context.structureSignals["answeredSignal"])
@@ -135,6 +142,7 @@ class QuestionExtractorChaoxingCoverageTest {
         val context = QuestionExtractor.extract(submitConfirmDialogSnapshot())
 
         assertEquals("", context.question)
+        assertEquals(QuestionPageStage.submitDialog, context.pageStage)
         assertTrue(context.actions.any { action -> action.kind == "submit" || action.kind == "confirm" })
         assertTrue(context.actions.any { action -> action.kind == "cancel" })
         assertEquals(1.0, context.structureSignals["submitDialogSignal"])
@@ -146,9 +154,11 @@ class QuestionExtractorChaoxingCoverageTest {
     fun `extract submit confirm dialog with unanswered warning blocks auto confirm signal`() {
         val context = QuestionExtractor.extract(submitConfirmDialogWithWarningSnapshot())
 
+        assertEquals(QuestionPageStage.submitWarning, context.pageStage)
+        assertEquals(1.0, context.structureSignals["submitWarningSignal"])
         assertEquals(1.0, context.structureSignals["unansweredWarningSignal"])
         assertEquals(0.0, context.structureSignals["submitDialogSignal"])
-        assertTrue(context.needConfirm)
+        assertFalse(context.needConfirm)
     }
 
     private fun multiSelectSnapshot(): UiSnapshot {

@@ -4,33 +4,26 @@ import 'package:flutter_answer/app/agent/domain/services/submit_page_stop_guard.
 
 void main() {
   group('resolveSubmitPageStopMessage', () {
-    test('在提交页信号出现时返回人工确认提示', () {
+    test('页面阶段为提交页时返回人工确认提示', () {
       final result = NativeToolExecutionResult(
         requestId: 'req_1',
         tool: 'get_question_context',
         ok: true,
         result: <String, dynamic>{
-          'context': <String, dynamic>{
-            'structureSignals': <String, dynamic>{'submitReadySignal': 1},
-          },
+          'context': <String, dynamic>{'pageStage': 'submit_ready'},
         },
       );
 
       expect(resolveSubmitPageStopMessage(result), submitPageStopMessage);
     });
 
-    test('在未答完警告出现时返回未答完提示', () {
+    test('页面阶段为未答完提交警告时返回未答完提示', () {
       final result = NativeToolExecutionResult(
         requestId: 'req_2',
         tool: 'get_question_context',
         ok: true,
         result: <String, dynamic>{
-          'context': <String, dynamic>{
-            'structureSignals': <String, dynamic>{
-              'submitDialogSignal': 1,
-              'unansweredWarningSignal': 1,
-            },
-          },
+          'context': <String, dynamic>{'pageStage': 'submit_warning'},
         },
       );
 
@@ -40,19 +33,32 @@ void main() {
       );
     });
 
-    test('普通题目页不触发停止', () {
+    test('继续答题入口页不触发停止', () {
       final result = NativeToolExecutionResult(
         requestId: 'req_3',
         tool: 'get_question_context',
         ok: true,
         result: <String, dynamic>{
-          'context': <String, dynamic>{
-            'structureSignals': <String, dynamic>{'finalQuestionSignal': 1},
-          },
+          'context': <String, dynamic>{'pageStage': 'resume_entry'},
         },
       );
 
       expect(resolveSubmitPageStopMessage(result), isNull);
+    });
+
+    test('旧版本上下文仍可回退到 structureSignals', () {
+      final result = NativeToolExecutionResult(
+        requestId: 'req_4',
+        tool: 'get_question_context',
+        ok: true,
+        result: <String, dynamic>{
+          'context': <String, dynamic>{
+            'structureSignals': <String, dynamic>{'submitDialogSignal': 1},
+          },
+        },
+      );
+
+      expect(resolveSubmitPageStopMessage(result), submitPageStopMessage);
     });
   });
 }

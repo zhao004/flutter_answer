@@ -4,7 +4,7 @@ class AgentConfig {
     this.apiKey = '',
     this.model = 'gpt-5-mini',
     this.taskPrompt =
-        'Read the current question page, answer carefully, prefer tools, and stop at the submit page for manual confirmation.',
+        'Read the current page, continue through start or resume entry pages, answer carefully, prefer tools, and stop only at submit-related pages for manual confirmation.',
     this.maxIterations = defaultMaxIterations,
     this.maxExecutionMinutes = defaultMaxExecutionMinutes,
     this.maxRepeatedSameToolCall = defaultMaxRepeatedSameToolCall,

@@ -8,6 +8,8 @@ object QuestionExtractor {
     private const val submitReadyConfidence = 0.82
     private const val submitDialogStructureConfidence = 0.7
     private const val submitDialogConfidence = 0.78
+    private const val submitWarningStructureConfidence = 0.74
+    private const val submitWarningConfidence = 0.8
     private val alphaOptionPattern = Regex("^([A-Ha-h])[.、:：．\\)]\\s*(.+)$")
     private val digitOptionPattern = Regex("^(\\d{1,2})[.、:：．\\)]\\s*(.+)$")
     private val chineseOptionPattern = Regex("^[（(]?([一二三四五六七八九十])[)）.、]\\s*(.+)$")
@@ -206,12 +208,16 @@ object QuestionExtractor {
         val progress = extractQuestionProgress(snapshot)
         val finalQuestion = isFinalQuestion(rawQuestionIndex, progress)
         val currentAnswered = isCurrentQuestionAnswered(options, inputs)
-        val unansweredWarning = hasUnansweredWarning(snapshot)
+        val unansweredWarning = hasUnansweredWarning(snapshot, actions)
         val submitReadyPage = isSubmitReadyPage(
             actions = actions,
             finalQuestion = finalQuestion,
             currentAnswered = currentAnswered,
             unansweredWarning = unansweredWarning,
+        )
+        val submitWarningPage = isSubmitWarningPage(
+            unansweredWarning = unansweredWarning,
+            actions = actions,
         )
         val submitDialogPage = isSubmitDialogPage(
             actions = actions,
@@ -220,8 +226,35 @@ object QuestionExtractor {
             snapshot = snapshot,
             unansweredWarning = unansweredWarning,
         )
-        val questionIndex = if (resumeEntryPage || submitDialogPage) null else rawQuestionIndex
-        val cleanedQuestion = if (resumeEntryPage || submitDialogPage) "" else rawCleanedQuestion
+        val hasQuestionLikeSignals = rawCleanedQuestion.isNotBlank() ||
+            options.isNotEmpty() ||
+            inputs.isNotEmpty() ||
+            containsBlankPlaceholder(rawCleanedQuestion)
+        val pageStage = resolvePageStage(
+            resumeEntryPage = resumeEntryPage,
+            hasQuestionSignals = hasQuestionLikeSignals,
+            submitReadyPage = submitReadyPage,
+            submitDialogPage = submitDialogPage,
+            submitWarningPage = submitWarningPage,
+        )
+        val questionIndex = if (
+            pageStage == QuestionPageStage.resumeEntry ||
+                pageStage == QuestionPageStage.submitDialog ||
+                pageStage == QuestionPageStage.submitWarning
+        ) {
+            null
+        } else {
+            rawQuestionIndex
+        }
+        val cleanedQuestion = if (
+            pageStage == QuestionPageStage.resumeEntry ||
+                pageStage == QuestionPageStage.submitDialog ||
+                pageStage == QuestionPageStage.submitWarning
+        ) {
+            ""
+        } else {
+            rawCleanedQuestion
+        }
         val normalizedQuestion = normalizeForMatching(cleanedQuestion)
         val attachments = collectAttachments(snapshot)
         val blanks = collectBlanks(cleanedQuestion, inputs, snapshot.elements)
@@ -230,6 +263,7 @@ object QuestionExtractor {
         val hasBlankPlaceholder = containsBlankPlaceholder(cleanedQuestion)
         val hasInputSignal = inputs.isNotEmpty()
         val hasChoiceSignal = options.isNotEmpty()
+        val hasQuestionSignals = cleanedQuestion.isNotBlank() || hasChoiceSignal || hasInputSignal || hasBlankPlaceholder
 
         val submitLikeActionCount = actions.count { action ->
             action.kind == "submit" || action.kind == "confirm"
@@ -237,7 +271,6 @@ object QuestionExtractor {
         val hasVoteKeyword = voteKeywords.any { keyword -> normalizedQuestion.contains(keyword) } ||
             actions.any { action -> action.text.contains("投票") } ||
             options.any { option -> voteKeywords.any { keyword -> option.text.contains(keyword) } }
-        val hasQuestionSignals = cleanedQuestion.isNotBlank() || hasChoiceSignal || hasInputSignal || hasBlankPlaceholder
         val submitOnlyPage = submitLikeActionCount > 0 &&
             options.isEmpty() &&
             inputs.isEmpty() &&
@@ -254,6 +287,7 @@ object QuestionExtractor {
             currentAnswered = currentAnswered,
             submitReadyPage = submitReadyPage,
             submitDialogPage = submitDialogPage,
+            submitWarningPage = submitWarningPage,
             unansweredWarning = unansweredWarning,
             progress = progress,
         )
@@ -268,6 +302,7 @@ object QuestionExtractor {
             resumeEntryPage = resumeEntryPage,
             submitReadyPage = submitReadyPage,
             submitDialogPage = submitDialogPage,
+            submitWarningPage = submitWarningPage,
         )
 
         val confidence = estimateConfidence(
@@ -282,8 +317,9 @@ object QuestionExtractor {
             resumeEntryPage = resumeEntryPage,
             submitReadyPage = submitReadyPage,
             submitDialogPage = submitDialogPage,
+            submitWarningPage = submitWarningPage,
         )
-        val needConfirm = !resumeEntryPage && !submitReadyPage && !submitDialogPage && confidence < 0.64
+        val needConfirm = pageStage == QuestionPageStage.question && confidence < 0.64
         val contextSignature = buildContextSignature(
             regions = regions,
             actions = actions,
@@ -300,6 +336,7 @@ object QuestionExtractor {
 
         return QuestionContext(
             contextSignature = contextSignature,
+            pageStage = pageStage,
             questionIndex = questionIndex,
             question = cleanedQuestion,
             normalizedQuestion = normalizedQuestion,
@@ -525,6 +562,7 @@ object QuestionExtractor {
         resumeEntryPage: Boolean,
         submitReadyPage: Boolean,
         submitDialogPage: Boolean,
+        submitWarningPage: Boolean,
     ): Double {
         if (resumeEntryPage) {
             // “继续答题”入口页虽然没有题目结构，但属于可安全推进页面，显式抬高结构置信度避免停滞。
@@ -537,6 +575,10 @@ object QuestionExtractor {
         if (submitDialogPage) {
             // 提交确认弹窗属于高风险动作页，给中高置信度避免反复确认造成卡住。
             return submitDialogStructureConfidence
+        }
+        if (submitWarningPage) {
+            // 未答完提交警告页已具备明确的停止语义，提升置信度避免继续执行危险动作。
+            return submitWarningStructureConfidence
         }
         var score = 0.34
         if (question.length >= 8) {
@@ -581,6 +623,7 @@ object QuestionExtractor {
         currentAnswered: Boolean,
         submitReadyPage: Boolean,
         submitDialogPage: Boolean,
+        submitWarningPage: Boolean,
         unansweredWarning: Boolean,
         progress: QuestionProgress?,
     ): Map<String, Double> {
@@ -598,6 +641,7 @@ object QuestionExtractor {
             "answeredSignal" to if (currentAnswered) 1.0 else 0.0,
             "submitReadySignal" to if (submitReadyPage) 1.0 else 0.0,
             "submitDialogSignal" to if (submitDialogPage) 1.0 else 0.0,
+            "submitWarningSignal" to if (submitWarningPage) 1.0 else 0.0,
             "unansweredWarningSignal" to if (unansweredWarning) 1.0 else 0.0,
             "progressCurrent" to (progress?.current?.toDouble() ?: 0.0),
             "progressTotal" to (progress?.total?.toDouble() ?: 0.0),
@@ -616,6 +660,7 @@ object QuestionExtractor {
         resumeEntryPage: Boolean,
         submitReadyPage: Boolean,
         submitDialogPage: Boolean,
+        submitWarningPage: Boolean,
     ): Double {
         if (resumeEntryPage) {
             // 入口页动作目标明确且风险可控，直接给到可执行置信度，减少 Agent 在入口页反复确认。
@@ -628,6 +673,10 @@ object QuestionExtractor {
         if (submitDialogPage) {
             // 提交确认弹窗需要快速完成闭环，避免低置信度造成重复读取。
             return submitDialogConfidence
+        }
+        if (submitWarningPage) {
+            // 未答完提交警告页需要立刻停止并交给人工确认，因此给出稳定置信度。
+            return submitWarningConfidence
         }
         // 仅基于可观测结构估计置信度，避免主观推断偏差污染结果。
         var score = 0.22
@@ -656,6 +705,23 @@ object QuestionExtractor {
             score -= 0.16
         }
         return score.coerceIn(0.08, 0.98)
+    }
+
+    private fun resolvePageStage(
+        resumeEntryPage: Boolean,
+        hasQuestionSignals: Boolean,
+        submitReadyPage: Boolean,
+        submitDialogPage: Boolean,
+        submitWarningPage: Boolean,
+    ): String {
+        return when {
+            resumeEntryPage -> QuestionPageStage.resumeEntry
+            submitWarningPage -> QuestionPageStage.submitWarning
+            submitDialogPage -> QuestionPageStage.submitDialog
+            submitReadyPage -> QuestionPageStage.submitReady
+            hasQuestionSignals -> QuestionPageStage.question
+            else -> QuestionPageStage.unknown
+        }
     }
 
     fun buildContextSignature(
@@ -1484,11 +1550,32 @@ object QuestionExtractor {
         return questionIndex != null && questionIndex >= progress.total
     }
 
-    private fun hasUnansweredWarning(snapshot: UiSnapshot): Boolean {
-        return snapshot.elements.any { element ->
-            val text = cleanText(element.text ?: element.desc)
-            text.isNotBlank() && unansweredWarningKeywords.any { keyword -> text.contains(keyword) }
+    private fun hasUnansweredWarning(
+        snapshot: UiSnapshot,
+        actions: List<QuestionAction>,
+    ): Boolean {
+        val pageTexts = snapshot.elements
+            .asSequence()
+            .map { element -> cleanText(element.text ?: element.desc) }
+            .filter(String::isNotBlank)
+            .toList()
+        if (pageTexts.isEmpty()) {
+            return false
         }
+        val warningTexts = pageTexts.filter { text ->
+            unansweredWarningKeywords.any { keyword -> text.contains(keyword) } &&
+                inputHintKeywords.none { keyword -> text.contains(keyword) }
+        }
+        if (warningTexts.isEmpty()) {
+            return false
+        }
+        val hasSubmitContext = actions.any { action ->
+            action.kind == "submit" || action.kind == "confirm" || action.kind == "cancel"
+        } || warningTexts.any { text ->
+            submitDialogKeywords.any { keyword -> text.contains(keyword) } ||
+                confirmActionKeywords.any { keyword -> text.contains(keyword) }
+        }
+        return hasSubmitContext
     }
 
     private fun isSubmitReadyPage(
@@ -1507,6 +1594,18 @@ object QuestionExtractor {
         val hasNextAction = actions.any { action -> action.kind == "next" }
         val likelyFinalQuestion = finalQuestion || !hasNextAction
         return likelyFinalQuestion && currentAnswered
+    }
+
+    private fun isSubmitWarningPage(
+        unansweredWarning: Boolean,
+        actions: List<QuestionAction>,
+    ): Boolean {
+        if (!unansweredWarning) {
+            return false
+        }
+        return actions.any { action ->
+            action.kind == "submit" || action.kind == "confirm" || action.kind == "cancel"
+        }
     }
 
     private fun isSubmitDialogPage(

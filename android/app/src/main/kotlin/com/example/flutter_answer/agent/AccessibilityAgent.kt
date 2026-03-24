@@ -108,7 +108,6 @@ object AccessibilityAgent {
             message = payload["message"].toString(),
             payload = mapOf("regionCount" to regions.size),
         )
-        AgentEventBus.log("info", payload["message"].toString())
         AgentEventBus.toolResult("getPageContext", true, payload)
         return payload
     }
@@ -143,7 +142,6 @@ object AccessibilityAgent {
             message = payload["message"].toString(),
             payload = mapOf("nodeCount" to snapshot.elements.size),
         )
-        AgentEventBus.log("info", payload["message"].toString())
         AgentEventBus.toolResult("getUiSnapshot", true, payload)
         return payload
     }
@@ -172,13 +170,25 @@ object AccessibilityAgent {
         )
         cacheActionLocators(context)
 
-        if (context.needConfirm) {
-            transitionTo(AutomationFlowState.WAITING_CONFIRM, "题目置信度较低，等待确认。")
-        } else {
-            transitionTo(AutomationFlowState.ANSWER_MATCHING, "题目解析完成，进入答案匹配阶段。")
+        when {
+            context.needConfirm -> {
+                transitionTo(AutomationFlowState.WAITING_CONFIRM, "题目置信度较低，等待确认。")
+            }
+            context.pageStage == QuestionPageStage.resumeEntry -> {
+                transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "识别到继续答题入口，等待推进动作。")
+            }
+            context.pageStage in setOf(
+                QuestionPageStage.submitReady,
+                QuestionPageStage.submitDialog,
+                QuestionPageStage.submitWarning,
+            ) -> {
+                transitionTo(AutomationFlowState.WAITING_CONFIRM, "识别到提交相关页面，等待停止守卫结束流程。")
+            }
+            else -> {
+                transitionTo(AutomationFlowState.ANSWER_MATCHING, "题目解析完成，进入答案匹配阶段。")
+            }
         }
 
-        val questionPreview = context.question.take(80).ifBlank { "（题干为空）" }
         val payload = success(
             message = "结构化上下文已提取，识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
             extra = mapOf("context" to context.toMap()),
@@ -194,8 +204,6 @@ object AccessibilityAgent {
                 "fingerprint" to context.fingerprint,
             ),
         )
-        AgentEventBus.log("info", payload["message"].toString())
-        AgentEventBus.log("info", "题干摘要：$questionPreview")
         AgentEventBus.toolResult("getQuestionContext", true, payload)
         return payload
     }
@@ -634,7 +642,6 @@ object AccessibilityAgent {
                     ok = true,
                     message = payload["message"].toString(),
                 )
-                AgentEventBus.log("info", payload["message"].toString())
                 AgentEventBus.toolResult("waitForIdle", true, payload)
                 return payload
             }

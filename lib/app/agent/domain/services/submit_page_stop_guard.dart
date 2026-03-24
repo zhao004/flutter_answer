@@ -3,6 +3,10 @@ import '../models/native_tool_execution.dart';
 const String submitPageStopMessage = '检测到提交页面，Agent 已自动停止，请人工确认后再提交。';
 const String unansweredWarningStopMessage =
     '检测到未答完提交提示，Agent 已自动停止，请先检查未作答题目后再手动提交。';
+const String _pageStageResumeEntry = 'resume_entry';
+const String _pageStageSubmitReady = 'submit_ready';
+const String _pageStageSubmitDialog = 'submit_dialog';
+const String _pageStageSubmitWarning = 'submit_warning';
 
 String? resolveSubmitPageStopMessage(NativeToolExecutionResult result) {
   if (!result.ok || result.tool != 'get_question_context') {
@@ -12,11 +16,26 @@ String? resolveSubmitPageStopMessage(NativeToolExecutionResult result) {
   if (context.isEmpty) {
     return null;
   }
+  final pageStage = context['pageStage']?.toString().trim() ?? '';
+  if (pageStage == _pageStageResumeEntry) {
+    return null;
+  }
+  if (pageStage == _pageStageSubmitWarning) {
+    return unansweredWarningStopMessage;
+  }
+  if (pageStage == _pageStageSubmitReady ||
+      pageStage == _pageStageSubmitDialog) {
+    return submitPageStopMessage;
+  }
   final structureSignals = _readMap(context['structureSignals']);
   if (structureSignals.isEmpty) {
     return null;
   }
-  if (_readSignal(structureSignals['unansweredWarningSignal']) >= 1) {
+  final submitWarningSignal = _readSignal(
+    structureSignals['submitWarningSignal'],
+  );
+  if (submitWarningSignal >= 1 ||
+      _readSignal(structureSignals['unansweredWarningSignal']) >= 1) {
     return unansweredWarningStopMessage;
   }
   final submitReadySignal = _readSignal(structureSignals['submitReadySignal']);
