@@ -269,28 +269,6 @@ class _AccessCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primaryContainer.withValues(
-                  alpha: 0.5,
-                ),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
-                accessibilityEnabled
-                    ? hasActiveWindow
-                          ? '当前已检测到前台页面，可以继续使用自动操作。'
-                          : '无障碍服务已开启，但还没有读取到前台页面。'
-                    : '建议先开启无障碍服务，再显示悬浮窗。',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurface,
-                  height: 1.5,
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
             _SwitchTile(
               icon: Icons.layers_outlined,
               title: '悬浮窗权限',
@@ -355,18 +333,6 @@ class _AgentConfigCard extends StatelessWidget {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    _InfoPill(
-                      label: '提供商',
-                      value: providerUrl.isEmpty ? '未填写' : '已填写',
-                    ),
-                    _InfoPill(label: '密钥', value: hasApiKey ? '已保存' : '待填写'),
-                    _InfoPill(label: '模型', value: model),
-                  ],
-                ),
                 const SizedBox(height: 16),
                 if (wide)
                   Row(
@@ -424,14 +390,6 @@ class _AgentConfigCard extends StatelessWidget {
                   decoration: InputDecoration(
                     labelText: '提供商 API 密钥',
                     hintText: hasApiKey ? '已保存到本地，可直接覆盖' : 'sk-...',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '如需调整运行阈值，可在后续高级设置中再修改，这里默认沿用已有配置。',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    height: 1.5,
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -670,14 +628,6 @@ class _SectionCard extends StatelessWidget {
                 fontWeight: FontWeight.w800,
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              subtitle,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                height: 1.5,
-              ),
-            ),
             const SizedBox(height: 16),
             child,
           ],
@@ -760,81 +710,6 @@ class _SwitchTile extends StatelessWidget {
             Switch(value: value, onChanged: enabled ? onChanged : null),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _InfoPill extends StatelessWidget {
-  const _InfoPill({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            label,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: theme.textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(
-          alpha: 0.55,
-        ),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: theme.colorScheme.primary),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: theme.textTheme.labelLarge?.copyWith(
-              color: theme.colorScheme.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
       ),
     );
   }
