@@ -1,7 +1,15 @@
-# flutter_answer
+## 界面截图
 
-一个基于 Flutter 构建的 AI 自动答题应用，面向 Android 场景提供悬浮窗控制、无障碍能力接入和大模型代理执行链路。项目通过本地配置提供商地址、API
-Key 与模型参数，结合 LangChain 运行时驱动答题流程，适合用于需要页面感知、题目采集、自动操作与结果提交控制的移动端辅助场景。
+<img src="assets/images/screenshots01.png" alt="主界面截图" width="280" />
+<img src="assets/images/screenshots02.png" alt="悬浮窗面板截图" width="280" />
+
+## 学习通效果视频
+
+学习通效果演示视频文件位于：`assets/videos/example.mp4`
+
+<video src="assets/videos/example.mp4" controls width="360"></video>
+
+如果当前平台不支持内嵌播放，可通过链接查看或下载：[example.mp4](assets/videos/example.mp4)
 
 ## 项目简介
 
@@ -14,14 +22,6 @@ Key 与模型参数，结合 LangChain 运行时驱动答题流程，适合用�
 - 题目上下文读取、UI 快照获取、滚动与返回等原生工具调用
 - 悬浮窗面板与主应用之间的实时消息同步
 
-## 学习通效果视频
-
-学习通效果演示视频文件位于：`assets/videos/example.mp4`
-
-<video src="assets/videos/example.mp4" controls width="360"></video>
-
-如果当前平台不支持内嵌播放，可通过链接查看或下载：[example.mp4](assets/videos/example.mp4)
-
 ## 技术栈
 
 - Flutter
@@ -30,6 +30,15 @@ Key 与模型参数，结合 LangChain 运行时驱动答题流程，适合用�
 - SharedPreferences
 - LangChain / langchain_openai
 - flutter_overlay_window
+
+## Flutter 环境
+
+```shell
+Flutter 3.41.2 • channel stable • https://github.com/flutter/flutter.git
+Framework • revision 90673a4eef (5 weeks ago) • 2026-02-18 13:54:59 -0800
+Engine • hash d96704abcce17ff165bbef9d77123407ef961017 (revision 6c0baaebf7) (1 months ago) • 2026-02-18 19:22:23.000Z
+Tools • Dart 3.11.0 • DevTools 2.54.1
+```
 
 ## 使用说明
 
