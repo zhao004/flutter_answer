@@ -14,6 +14,14 @@ Key 与模型参数，结合 LangChain 运行时驱动答题流程，适合用�
 - 题目上下文读取、UI 快照获取、滚动与返回等原生工具调用
 - 悬浮窗面板与主应用之间的实时消息同步
 
+## 学习通效果视频
+
+学习通效果演示视频文件位于：`assets/videos/example.mp4`
+
+<video src="assets/videos/example.mp4" controls width="360"></video>
+
+如果当前平台不支持内嵌播放，可通过链接查看或下载：[example.mp4](assets/videos/example.mp4)
+
 ## 技术栈
 
 - Flutter
