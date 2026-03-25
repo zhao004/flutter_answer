@@ -31,7 +31,7 @@
 - LangChain / langchain_openai
 - flutter_overlay_window
 
-## Flutter 环境
+### Flutter 环境
 
 ```shell
 Flutter 3.41.2 • channel stable • https://github.com/flutter/flutter.git
@@ -62,3 +62,12 @@ Tools • Dart 3.11.0 • DevTools 2.54.1
 - `lib/app/pages/overlay/`：悬浮窗 UI 与交互
 - `lib/app/agent/`：代理配置、运行状态、平台网关与运行时服务
 - `lib/app/services/`：诊断提示与主界面/悬浮窗通信桥接
+
+## 项目说明
+
+本软件用于学习交流使用,可能存在一些问题和不足。  
+欢迎大家提出宝贵意见和建议。如有任何关于代码、功能或使用方面的问题，欢迎提交 issue 或联系开发者。
+
+## 开源协议
+
+本项目基于 MIT 协议开源，允许在保留版权与许可声明的前提下进行使用、修改和分发。完整协议内容见 [LICENSE](LICENSE)。
