@@ -26,10 +26,11 @@
 
 - Flutter
 - GetX
-- Dio + Retrofit
 - SharedPreferences
 - LangChain / langchain_openai
-- flutter_overlay_window
+- Android MethodChannel / EventChannel
+- Android AccessibilityService
+- 原生悬浮窗控制器
 
 ### Flutter 环境
 
@@ -49,6 +50,16 @@ Tools • Dart 3.11.0 • DevTools 2.54.1
 5. 根据实际答题场景调整最大轮数、最长运行时间和保护阈值
 6. 打开悬浮窗后启动代理，观察日志流与运行状态
 
+### Release 构建说明
+
+- `release` 不再复用 `debug` 签名
+- 默认 `applicationId` 为 `com.zhao.flutter_answer`，可通过 `APP_ID` 覆盖
+- 若要构建签名版 release，请在 `android/keystore.properties` 或环境变量中提供：
+  - `ANDROID_KEYSTORE_PATH`
+  - `ANDROID_KEYSTORE_PASSWORD`
+  - `ANDROID_KEY_ALIAS`
+  - `ANDROID_KEY_PASSWORD`
+
 ## 注意事项
 
 - 当前能力设计明显偏向 Android 设备场景，悬浮窗与无障碍能力依赖系统权限
@@ -57,11 +68,18 @@ Tools • Dart 3.11.0 • DevTools 2.54.1
 
 ## 目录概览
 
-- `lib/main.dart`：应用入口与悬浮窗入口
+- `lib/main.dart`：应用入口
 - `lib/app/pages/home/`：主界面、权限配置、日志展示
-- `lib/app/pages/overlay/`：悬浮窗 UI 与交互
 - `lib/app/agent/`：代理配置、运行状态、平台网关与运行时服务
 - `lib/app/services/`：诊断提示与主界面/悬浮窗通信桥接
+- `android/app/src/main/kotlin/com/example/flutter_answer/agent/`：无障碍工具与题目解析
+- `android/app/src/main/kotlin/com/example/flutter_answer/overlay/`：原生悬浮窗实现
+
+## 开发验证
+
+- Dart/Flutter：`flutter analyze`、`flutter test`
+- Android 单测：`cd android && ./gradlew testDebugUnitTest`
+- CI：仓库内提供最小工作流，默认执行以上三项检查
 
 ## 项目说明
 

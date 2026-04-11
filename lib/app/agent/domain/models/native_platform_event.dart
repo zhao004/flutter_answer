@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 class NativePlatformEvent {
   const NativePlatformEvent({
     required this.type,
@@ -17,6 +19,10 @@ class NativePlatformEvent {
   final Map<String, dynamic>? payload;
   final int? timestamp;
 
+  factory NativePlatformEvent.fromDynamic(dynamic raw) {
+    return NativePlatformEvent.fromMap(_parseMap(raw));
+  }
+
   factory NativePlatformEvent.fromMap(Map<String, dynamic> json) {
     return NativePlatformEvent(
       type: json['type']?.toString() ?? 'event',
@@ -27,6 +33,23 @@ class NativePlatformEvent {
       payload: _asMap(json['payload']),
       timestamp: _readInt(json['timestamp']),
     );
+  }
+
+  static Map<String, dynamic> _parseMap(dynamic raw) {
+    if (raw is Map) {
+      return raw.map(
+        (dynamic key, dynamic value) => MapEntry(key.toString(), value),
+      );
+    }
+    if (raw is String && raw.isNotEmpty) {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map(
+          (dynamic key, dynamic value) => MapEntry(key.toString(), value),
+        );
+      }
+    }
+    throw const FormatException('原生事件不是合法对象。');
   }
 
   static Map<String, dynamic>? _asMap(dynamic value) {

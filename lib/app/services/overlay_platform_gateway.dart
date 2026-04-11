@@ -1,7 +1,9 @@
+import '../models/overlay_state_snapshot.dart';
 import '../models/overlay_window_position.dart';
+import '../models/overlay_platform_event.dart';
 
 abstract interface class OverlayPlatformGateway {
-  Stream<Map<String, dynamic>> events();
+  Stream<OverlayPlatformEvent> events();
 
   Future<bool> isPermissionGranted();
 
@@ -9,7 +11,7 @@ abstract interface class OverlayPlatformGateway {
 
   Future<bool> isActive();
 
-  Future<Map<String, dynamic>> getOverlayState();
+  Future<OverlayStateSnapshot> getOverlayState();
 
   Future<void> showOverlay({
     required String mode,

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../domain/models/native_platform_event.dart';
 import '../domain/models/native_tool_definition.dart';
 import '../domain/models/native_tool_execution.dart';
+import '../../services/platform_payload_exception.dart';
 import 'agent_platform_gateway.dart';
 
 class MethodChannelAgentPlatformGateway implements AgentPlatformGateway {
@@ -25,7 +26,10 @@ class MethodChannelAgentPlatformGateway implements AgentPlatformGateway {
   Stream<NativePlatformEvent> events() {
     return _eventChannel
         .receiveBroadcastStream(_clientId)
-        .map<Map<String, dynamic>>(_normalizeMap)
+        .map<Map<String, dynamic>>(
+          (dynamic event) =>
+              PlatformPayloadReader.requireMap(event, context: 'Agent 事件流'),
+        )
         .map(NativePlatformEvent.fromMap);
   }
 
@@ -39,7 +43,7 @@ class MethodChannelAgentPlatformGateway implements AgentPlatformGateway {
     final payload = await _invoke('listTools');
     final tools = payload['tools'];
     if (tools is! List) {
-      return const <NativeToolDefinition>[];
+      throw const PlatformPayloadException('工具清单负载缺少 tools 数组。');
     }
 
     return tools
@@ -69,26 +73,6 @@ class MethodChannelAgentPlatformGateway implements AgentPlatformGateway {
       method,
       arguments,
     );
-    return _normalizeMap(response);
-  }
-
-  static Map<String, dynamic> _normalizeMap(dynamic value) {
-    if (value is Map) {
-      return value.map(
-        (dynamic key, dynamic item) =>
-            MapEntry(key.toString(), _normalizeValue(item)),
-      );
-    }
-    return <String, dynamic>{};
-  }
-
-  static dynamic _normalizeValue(dynamic value) {
-    if (value is Map) {
-      return _normalizeMap(value);
-    }
-    if (value is List) {
-      return value.map<dynamic>(_normalizeValue).toList();
-    }
-    return value;
+    return PlatformPayloadReader.requireMap(response, context: '平台方法 $method');
   }
 }

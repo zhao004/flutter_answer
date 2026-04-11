@@ -249,7 +249,15 @@ object NativeToolRegistry {
             ).toMap()
         }
 
-        val result = tool.execute(arguments)
+        val result = try {
+            tool.execute(arguments)
+        } catch (error: Throwable) {
+            mapOf(
+                "ok" to false,
+                "code" to "tool_execution_failed",
+                "message" to (error.message ?: "工具执行失败。"),
+            )
+        }
         return NativeToolResult(
             requestId = requestId,
             tool = toolName,

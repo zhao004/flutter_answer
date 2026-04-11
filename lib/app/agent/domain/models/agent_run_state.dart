@@ -27,6 +27,18 @@ class AgentRunState {
     );
   }
 
+  factory AgentRunState.fromMap(Map<String, dynamic> json) {
+    return AgentRunState(
+      running: json['running'] == true,
+      status: json['status']?.toString() ?? 'idle',
+      step: _readInt(json['step']),
+      message: json['message']?.toString() ?? '',
+      lastTool: json['lastTool']?.toString(),
+      lastModelText: json['lastModelText']?.toString(),
+      updatedAt: _readInt(json['updatedAt']),
+    );
+  }
+
   AgentRunState copyWith({
     bool? running,
     String? status,
@@ -57,5 +69,12 @@ class AgentRunState {
       'lastModelText': lastModelText,
       'updatedAt': updatedAt,
     };
+  }
+
+  static int _readInt(dynamic value) {
+    if (value is int) {
+      return value;
+    }
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 }

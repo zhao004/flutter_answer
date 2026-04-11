@@ -6,6 +6,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class FlutterAgentPlatform(
     private val activity: Activity,
+    private val toolDispatcher: NativeToolDispatcher = NativeToolDispatcher.shared,
 ) {
 
     fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -28,13 +29,13 @@ class FlutterAgentPlatform(
                     ?: "req_${System.nanoTime()}"
                 val toolName = call.argument<String>("toolName").orEmpty()
                 val arguments = normalizeMap(call.argument<Map<*, *>>("arguments"))
-                result.success(
-                    NativeToolRegistry.execute(
-                        requestId = requestId,
-                        toolName = toolName,
-                        arguments = arguments,
-                    ),
-                )
+                toolDispatcher.dispatch(
+                    requestId = requestId,
+                    toolName = toolName,
+                    arguments = arguments,
+                ) { payload ->
+                    result.success(payload)
+                }
             }
 
             else -> result.notImplemented()

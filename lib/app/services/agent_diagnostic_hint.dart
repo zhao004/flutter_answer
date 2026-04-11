@@ -1,3 +1,7 @@
+import '../agent/domain/models/agent_config.dart';
+import '../agent/domain/models/agent_run_state.dart';
+import '../agent/domain/models/service_status_snapshot.dart';
+
 enum AgentDiagnosticSeverity { info, warning, error }
 
 class AgentDiagnosticHint {
@@ -12,45 +16,54 @@ class AgentDiagnosticHint {
   final String title;
   final String summary;
   final List<String> actions;
+
+  Map<String, dynamic> toPayload() {
+    return <String, dynamic>{
+      'severity': switch (severity) {
+        AgentDiagnosticSeverity.info => 'info',
+        AgentDiagnosticSeverity.warning => 'warning',
+        AgentDiagnosticSeverity.error => 'error',
+      },
+      'title': title,
+      'summary': summary,
+      'actions': actions,
+    };
+  }
 }
 
 AgentDiagnosticHint? resolveAgentDiagnosticHint({
-  required Map<String, dynamic> serviceStatus,
-  required Map<String, dynamic> agentConfig,
-  required Map<String, dynamic> agentRunStatus,
+  required ServiceStatusSnapshot serviceStatus,
+  required AgentConfig agentConfig,
+  required AgentRunState agentRunState,
 }) {
-  final status = agentRunStatus['status']?.toString() ?? '';
+  final status = agentRunState.status;
   if (status != 'failed') {
     return null;
   }
 
-  final message = agentRunStatus['message']?.toString().trim() ?? '';
+  final message = agentRunState.message.trim();
   final normalizedMessage = message.toLowerCase();
-  final providerUrl = agentConfig['providerUrl']?.toString().trim() ?? '';
-  final model = agentConfig['model']?.toString().trim() ?? '';
-  final serviceEnabled = serviceStatus['enabled'] == true;
+  final providerUrl = agentConfig.providerUrl.trim();
+  final model = agentConfig.model.trim();
+  final serviceEnabled = serviceStatus.enabled;
 
   if (_containsAny(normalizedMessage, <String>['api key', 'apikey'])) {
     return const AgentDiagnosticHint(
       severity: AgentDiagnosticSeverity.error,
-      title: 'Missing API Key',
-      summary: 'The current session does not have a usable API key.',
-      actions: <String>[
-        'Return to the main screen and enter a provider API key again.',
-        'Save the config after entering the key so it remains available locally.',
-      ],
+      title: '缺少 API 密钥',
+      summary: '当前会话没有可用的提供商 API 密钥。',
+      actions: <String>['返回首页后重新填写提供商 API 密钥。', '填写后点击保存，确保当前配置已经生效。'],
     );
   }
 
   if (_containsAny(normalizedMessage, <String>['provider url', 'base url'])) {
     return const AgentDiagnosticHint(
       severity: AgentDiagnosticSeverity.error,
-      title: 'Missing Provider URL',
-      summary:
-          'The agent cannot contact the model provider without a base URL.',
+      title: '缺少提供商地址',
+      summary: '没有提供商基础地址时，Agent 无法连接模型服务。',
       actions: <String>[
-        'Fill in the provider URL on the main screen.',
-        'For OpenAI, the app can derive `/v1` automatically from `https://api.openai.com`.',
+        '在首页填写正确的提供商 URL。',
+        '如果使用 OpenAI，填写 `https://api.openai.com` 即可自动补全 `/v1`。',
       ],
     );
   }
@@ -63,25 +76,21 @@ AgentDiagnosticHint? resolveAgentDiagnosticHint({
   ])) {
     return AgentDiagnosticHint(
       severity: AgentDiagnosticSeverity.error,
-      title: 'Authentication Failed',
-      summary:
-          'The provider rejected the request. The key may be invalid, expired, or missing access to the selected model.${_currentModel(model)}',
-      actions: const <String>[
-        'Check whether the API key is correct and still active.',
-        'Confirm that the selected model is available to the current account.',
-      ],
+      title: '身份认证失败',
+      summary: '模型服务拒绝了当前请求，可能是密钥无效、已过期，或没有目标模型权限。${_currentModel(model)}',
+      actions: const <String>['检查 API 密钥是否填写正确且仍然有效。', '确认当前账号拥有所选模型的访问权限。'],
     );
   }
 
   if (_containsAny(normalizedMessage, <String>['404', 'not found'])) {
     return AgentDiagnosticHint(
       severity: AgentDiagnosticSeverity.error,
-      title: 'Provider Endpoint Not Found',
+      title: '模型接口不存在',
       summary:
-          'The provider returned 404. The configured base URL may not expose a compatible tool-calling endpoint.${_currentProvider(providerUrl)}',
+          '提供商返回了 404，当前配置的基础地址可能没有暴露兼容的工具调用接口。${_currentProvider(providerUrl)}',
       actions: const <String>[
-        'Verify the provider URL or proxy base path.',
-        'If you use a compatibility layer, make sure it supports tool calling.',
+        '核对提供商 URL 或代理基础路径是否正确。',
+        '如果使用兼容层或代理服务，确认它支持工具调用。',
       ],
     );
   }
@@ -93,12 +102,12 @@ AgentDiagnosticHint? resolveAgentDiagnosticHint({
   ])) {
     return AgentDiagnosticHint(
       severity: AgentDiagnosticSeverity.error,
-      title: 'Tool Calling Is Not Available',
+      title: '工具调用不可用',
       summary:
-          'The runtime could not load or use the Android tool catalog.${_currentProvider(providerUrl)}${_currentModel(model)}',
+          '运行时无法加载或使用 Android 原生工具目录。${_currentProvider(providerUrl)}${_currentModel(model)}',
       actions: const <String>[
-        'Confirm that the Android host is exposing the native tool registry.',
-        'If you use a third-party provider, make sure it supports tool calling.',
+        '确认 Android 宿主已经暴露原生工具注册表。',
+        '如果使用第三方模型服务，确认它支持工具调用。',
       ],
     );
   }
@@ -113,12 +122,11 @@ AgentDiagnosticHint? resolveAgentDiagnosticHint({
   ])) {
     return AgentDiagnosticHint(
       severity: AgentDiagnosticSeverity.warning,
-      title: 'Network Connection Failed',
-      summary:
-          'The app could not reach the model provider.${_currentProvider(providerUrl)}',
+      title: '网络连接失败',
+      summary: '应用暂时无法连接到模型提供商。${_currentProvider(providerUrl)}',
       actions: const <String>[
-        'Confirm that the Android device can access the provider URL.',
-        'If you use a LAN proxy or self-hosted gateway, confirm the phone can reach it directly.',
+        '确认 Android 设备可以访问当前提供商地址。',
+        '如果使用局域网代理或自托管网关，确认手机可以直接连通。',
       ],
     );
   }
@@ -127,15 +135,12 @@ AgentDiagnosticHint? resolveAgentDiagnosticHint({
     severity: serviceEnabled
         ? AgentDiagnosticSeverity.warning
         : AgentDiagnosticSeverity.error,
-    title: serviceEnabled ? 'Agent Run Failed' : 'Accessibility Not Ready',
-    summary: message.isEmpty
-        ? 'The agent stopped before it could complete the task.'
-        : message,
+    title: serviceEnabled ? 'Agent 运行失败' : '无障碍服务未就绪',
+    summary: message.isEmpty ? 'Agent 在完成任务前提前停止。' : message,
     actions: <String>[
-      if (!serviceEnabled)
-        'Enable the Android accessibility service before starting the agent again.',
-      'Inspect the latest payload and log stream to find the failing step.',
-      'Re-check the provider URL, model, and API key if the failure came from the model service.',
+      if (!serviceEnabled) '重新启动 Agent 前先开启 Android 无障碍服务。',
+      '查看最近负载和日志，定位失败步骤。',
+      '如果失败来自模型服务，重新检查提供商地址、模型和 API 密钥。',
     ],
   );
 }
@@ -146,14 +151,14 @@ bool _containsAny(String source, List<String> needles) {
 
 String _currentProvider(String providerUrl) {
   if (providerUrl.isEmpty) {
-    return ' No provider URL is currently configured.';
+    return ' 当前尚未配置提供商地址。';
   }
-  return ' Current provider: $providerUrl.';
+  return ' 当前提供商：$providerUrl。';
 }
 
 String _currentModel(String model) {
   if (model.isEmpty) {
-    return ' No model is currently configured.';
+    return ' 当前尚未配置模型。';
   }
-  return ' Current model: $model.';
+  return ' 当前模型：$model。';
 }

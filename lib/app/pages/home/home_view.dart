@@ -138,7 +138,7 @@ class _AccessibilityServiceSwitch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
-      final accessibilityEnabled = controller.serviceStatus['enabled'] == true;
+      final accessibilityEnabled = controller.serviceStatus.value.enabled;
 
       return _SwitchTile(
         icon: Icons.settings_accessibility,
@@ -165,8 +165,8 @@ class _OverlayVisibilitySwitch extends StatelessWidget {
       return _SwitchTile(
         icon: Icons.picture_in_picture_alt_outlined,
         title: '显示悬浮窗',
-        subtitle: controller.overlayActive.value ? '悬浮窗显示中。' : '开启后会显示控制面板。',
-        value: controller.overlayActive.value,
+        subtitle: controller.overlayActive ? '悬浮窗显示中。' : '开启后会显示控制面板。',
+        value: controller.overlayActive,
         enabled: !controller.overlayVisibilityBusy.value,
         onChanged: controller.toggleOverlayVisibility,
       );
@@ -182,7 +182,7 @@ class _AgentConfigCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
-      final hasApiKey = controller.agentConfig['hasApiKey'] == true;
+      final hasApiKey = controller.currentConfig.value.hasApiKey;
 
       return _SectionCard(
         title: 'Agent 配置',
@@ -281,11 +281,7 @@ class _HintSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
-      final hint = resolveAgentDiagnosticHint(
-        serviceStatus: controller.serviceStatus,
-        agentConfig: controller.agentConfig,
-        agentRunStatus: controller.agentRunStatus,
-      );
+      final hint = controller.diagnosticHint;
 
       if (hint == null) {
         return const SizedBox.shrink();
@@ -489,6 +485,16 @@ class _SectionCard extends StatelessWidget {
                 fontWeight: FontWeight.w800,
               ),
             ),
+            if (subtitle.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                subtitle,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  height: 1.45,
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             child,
           ],

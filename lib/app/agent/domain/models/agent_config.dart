@@ -139,6 +139,35 @@ class AgentConfig {
     ).sanitized();
   }
 
+  factory AgentConfig.fromPublicMap(
+    Map<String, dynamic> json, {
+    required String apiKey,
+  }) {
+    return AgentConfig(
+      providerUrl: json['providerUrl']?.toString() ?? '',
+      apiKey: apiKey,
+      model: json['model']?.toString().trim().isNotEmpty == true
+          ? json['model'].toString()
+          : 'gpt-5-mini',
+      taskPrompt: json['taskPrompt']?.toString().trim().isNotEmpty == true
+          ? json['taskPrompt'].toString()
+          : const AgentConfig().taskPrompt,
+      maxIterations: _readInt(json['maxIterations'], defaultMaxIterations),
+      maxExecutionMinutes: _readInt(
+        json['maxExecutionMinutes'],
+        defaultMaxExecutionMinutes,
+      ),
+      maxRepeatedSameToolCall: _readInt(
+        json['maxRepeatedSameToolCall'],
+        defaultMaxRepeatedSameToolCall,
+      ),
+      maxNoProgressActionStreak: _readInt(
+        json['maxNoProgressActionStreak'],
+        defaultMaxNoProgressActionStreak,
+      ),
+    ).sanitized();
+  }
+
   static int _readInt(dynamic value, int fallback) {
     if (value is int) {
       return value;

@@ -39,23 +39,7 @@ class LangChainAgentRuntimeService {
   }) async {
     final sanitizedConfig = config.sanitized();
     final runLimits = _resolveRunLimits(sanitizedConfig);
-    _validateConfig(sanitizedConfig);
     _stopRequested = false;
-
-    final nativeTools = await _platformGateway.listTools();
-    if (nativeTools.isEmpty) {
-      throw StateError('Android 原生侧未注册可用工具，无法启动 Agent。');
-    }
-
-    onLog(
-      'info',
-      '已通过 Platform Channel 加载 ${nativeTools.length} 个 Android 工具。',
-    );
-
-    final actionToolNames = nativeTools
-        .where((tool) => tool.category == 'action')
-        .map((tool) => tool.name)
-        .toSet();
     String? lastToolCallSignature;
     int repeatedToolCallStreak = 0;
     int noProgressActionStreak = 0;
@@ -69,6 +53,21 @@ class LangChainAgentRuntimeService {
     onStatus(latestState);
 
     try {
+      _validateConfig(sanitizedConfig);
+      final nativeTools = await _platformGateway.listTools();
+      if (nativeTools.isEmpty) {
+        throw StateError('Android 原生侧未注册可用工具，无法启动 Agent。');
+      }
+
+      onLog(
+        'info',
+        '已通过 Platform Channel 加载 ${nativeTools.length} 个 Android 工具。',
+      );
+
+      final actionToolNames = nativeTools
+          .where((tool) => tool.category == 'action')
+          .map((tool) => tool.name)
+          .toSet();
       final model = _buildModel(sanitizedConfig);
       final tools = nativeTools
           .map(
@@ -502,7 +501,7 @@ ${config.taskPrompt}
     if (_isExecutorStoppedByLimit(raw)) {
       return _buildExecutorLimitMessage(step: 0, limits: limits);
     }
-    return raw;
+    return raw.replaceFirst(RegExp(r'^(Bad state|StateError):\s*'), '').trim();
   }
 }
 

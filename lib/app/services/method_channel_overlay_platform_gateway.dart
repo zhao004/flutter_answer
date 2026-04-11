@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import '../models/overlay_state_snapshot.dart';
 import '../models/overlay_window_position.dart';
+import '../models/overlay_platform_event.dart';
+import 'platform_payload_exception.dart';
 import 'overlay_platform_gateway.dart';
 
 class MethodChannelOverlayPlatformGateway implements OverlayPlatformGateway {
@@ -20,10 +23,10 @@ class MethodChannelOverlayPlatformGateway implements OverlayPlatformGateway {
   final String _clientId = 'overlay_${DateTime.now().microsecondsSinceEpoch}';
 
   @override
-  Stream<Map<String, dynamic>> events() {
+  Stream<OverlayPlatformEvent> events() {
     return _eventChannel
         .receiveBroadcastStream(_clientId)
-        .map<Map<String, dynamic>>(_normalizeMap);
+        .map<OverlayPlatformEvent>(OverlayPlatformEvent.fromDynamic);
   }
 
   @override
@@ -46,11 +49,19 @@ class MethodChannelOverlayPlatformGateway implements OverlayPlatformGateway {
   }
 
   @override
-  Future<Map<String, dynamic>> getOverlayState() async {
+  Future<OverlayStateSnapshot> getOverlayState() async {
     final response = await _methodChannel.invokeMethod<dynamic>(
       'getOverlayState',
     );
-    return _normalizeMap(response);
+    final payload = PlatformPayloadReader.requireMap(
+      response,
+      context: '读取悬浮窗状态',
+    );
+    try {
+      return OverlayStateSnapshot.fromMap(payload);
+    } on ArgumentError catch (error) {
+      throw PlatformPayloadException('读取悬浮窗状态失败：$error');
+    }
   }
 
   @override
@@ -82,26 +93,6 @@ class MethodChannelOverlayPlatformGateway implements OverlayPlatformGateway {
       'sendOverlayMessage',
       <String, dynamic>{'payload': payload},
     );
-  }
-
-  static Map<String, dynamic> _normalizeMap(dynamic value) {
-    if (value is Map) {
-      return value.map(
-        (dynamic key, dynamic item) =>
-            MapEntry(key.toString(), _normalizeValue(item)),
-      );
-    }
-    return <String, dynamic>{};
-  }
-
-  static dynamic _normalizeValue(dynamic value) {
-    if (value is Map) {
-      return _normalizeMap(value);
-    }
-    if (value is List) {
-      return value.map<dynamic>(_normalizeValue).toList(growable: false);
-    }
-    return value;
   }
 
   static bool _readBool(dynamic value) {
