@@ -1,17 +1,13 @@
 package com.example.flutter_answer.agent
 
-import android.accessibilityservice.GestureDescription
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
-import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityNodeInfo
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 object AccessibilityAgent {
@@ -23,10 +19,7 @@ object AccessibilityAgent {
     private const val uiFingerprintTextLimit = 48
     private const val minMatchScore = 25
     private const val actionCacheMaxSize = 80
-    private const val gestureTapDurationMs = 40L
-    private const val gestureTapResultWaitMs = 450L
     private const val minGestureTapSizePx = 48
-    private const val maxGestureTapAreaRatio = 0.18
     private const val inputActivationWaitMs = 140L
     private const val inputBlurWaitMs = 100L
     private val blankHintPattern = Regex("^第\\s*\\d{1,3}\\s*空[:：]?$")
@@ -580,7 +573,7 @@ object AccessibilityAgent {
         }
 
         val beforeFingerprint = captureUiFingerprint(service.currentRoot())
-        val result = if (service.performGlobalAction(globalAction)) {
+        val result = if (AccessibilityAutomationDriver.performGlobalAction(globalAction, service)) {
             transitionTo(AutomationFlowState.RESULT_VERIFYING, "系统级动作已发送，开始回读校验。")
             val progress = observeUiProgress(beforeFingerprint)
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "系统级动作执行完成。")
@@ -1062,124 +1055,15 @@ object AccessibilityAgent {
     }
 
     private fun click(node: AccessibilityNodeInfo?): Boolean {
-        if (node == null) {
-            return false
-        }
-        if (supportsClickAction(node) && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            return true
-        }
-        if (performGestureTapBestEffort(node)) {
-            return true
-        }
-        var current = node.parent
-        while (current != null) {
-            if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                return true
-            }
-            current = current.parent
-        }
-        return false
+        return AccessibilityAutomationDriver.clickNode(node, ::rootBounds)
     }
 
     private fun canClick(node: AccessibilityNodeInfo?): Boolean {
-        if (node == null || !node.isEnabled) {
-            return false
-        }
-        if (supportsClickAction(node) || isGestureTapCandidate(node)) {
-            return true
-        }
-        var current = node.parent
-        while (current != null) {
-            if (current.isEnabled && (current.isClickable || isGestureTapCandidate(current))) {
-                return true
-            }
-            current = current.parent
-        }
-        return false
-    }
-
-    private fun supportsClickAction(node: AccessibilityNodeInfo): Boolean {
-        return node.isClickable || node.actionList.any { action -> action.id == AccessibilityNodeInfo.ACTION_CLICK }
+        return AccessibilityAutomationDriver.canClickNode(node, ::rootBounds)
     }
 
     private fun performGestureTapBestEffort(node: AccessibilityNodeInfo): Boolean {
-        var current: AccessibilityNodeInfo? = node
-        var depth = 0
-        while (current != null && depth < 4) {
-            if (performGestureTap(current)) {
-                return true
-            }
-            current = current.parent
-            depth += 1
-        }
-        return false
-    }
-
-    private fun performGestureTap(node: AccessibilityNodeInfo): Boolean {
-        val service = ExamAccessibilityService.instance ?: return false
-        if (!isGestureTapCandidate(node)) {
-            return false
-        }
-        val rect = Rect().also(node::getBoundsInScreen)
-        val rootRect = rootBounds() ?: rect
-        val minX = (rootRect.left + 1).toFloat()
-        val maxX = (rootRect.right - 1).coerceAtLeast(rootRect.left + 1).toFloat()
-        val minY = (rootRect.top + 1).toFloat()
-        val maxY = (rootRect.bottom - 1).coerceAtLeast(rootRect.top + 1).toFloat()
-        val path = Path().apply {
-            moveTo(rect.exactCenterX().coerceIn(minX, maxX), rect.exactCenterY().coerceIn(minY, maxY))
-        }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, gestureTapDurationMs))
-            .build()
-        val finished = CountDownLatch(1)
-        var completed = false
-        val dispatched = service.dispatchGesture(
-            gesture,
-            object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    completed = true
-                    finished.countDown()
-                }
-
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    finished.countDown()
-                }
-            },
-            null,
-        )
-        if (!dispatched) {
-            return false
-        }
-        finished.await(gestureTapResultWaitMs, TimeUnit.MILLISECONDS)
-        return completed
-    }
-
-    private fun isGestureTapCandidate(node: AccessibilityNodeInfo): Boolean {
-        if (!node.isEnabled) {
-            return false
-        }
-        val rect = Rect().also(node::getBoundsInScreen)
-        val width = rect.width().coerceAtLeast(0)
-        val height = rect.height().coerceAtLeast(0)
-        if (width < minGestureTapSizePx || height < minGestureTapSizePx) {
-            return false
-        }
-        val screenArea = rootBounds()?.let { bounds ->
-            bounds.width().coerceAtLeast(0) * bounds.height().coerceAtLeast(0)
-        } ?: 0
-        val nodeArea = width * height
-        if (screenArea > 0 && nodeArea > (screenArea * maxGestureTapAreaRatio).toInt()) {
-            return false
-        }
-        val hasTextSignal = node.text?.toString()?.trim().isNullOrBlank().not() ||
-            node.contentDescription?.toString()?.trim().isNullOrBlank().not()
-        if (hasTextSignal || node.isCheckable || node.isEditable) {
-            return true
-        }
-        val className = node.className?.toString().orEmpty()
-        return className.contains("Button", ignoreCase = true) ||
-            className.contains("TextView", ignoreCase = true)
+        return AccessibilityAutomationDriver.tapNodeBestEffort(node, ::rootBounds)
     }
 
     private fun rootBounds(): Rect? {
@@ -1384,39 +1268,7 @@ object AccessibilityAgent {
     }
 
     private fun performGestureTapAt(x: Float, y: Float): Boolean {
-        val service = ExamAccessibilityService.instance ?: return false
-        val rootRect = rootBounds() ?: return false
-        val minX = (rootRect.left + 1).toFloat()
-        val maxX = (rootRect.right - 1).coerceAtLeast(rootRect.left + 1).toFloat()
-        val minY = (rootRect.top + 1).toFloat()
-        val maxY = (rootRect.bottom - 1).coerceAtLeast(rootRect.top + 1).toFloat()
-        val path = Path().apply {
-            moveTo(x.coerceIn(minX, maxX), y.coerceIn(minY, maxY))
-        }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, gestureTapDurationMs))
-            .build()
-        val finished = CountDownLatch(1)
-        var completed = false
-        val dispatched = service.dispatchGesture(
-            gesture,
-            object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    completed = true
-                    finished.countDown()
-                }
-
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    finished.countDown()
-                }
-            },
-            null,
-        )
-        if (!dispatched) {
-            return false
-        }
-        finished.await(gestureTapResultWaitMs, TimeUnit.MILLISECONDS)
-        return completed
+        return AccessibilityAutomationDriver.tapPoint(x, y, ::rootBounds)
     }
 
     private fun findToggleNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {

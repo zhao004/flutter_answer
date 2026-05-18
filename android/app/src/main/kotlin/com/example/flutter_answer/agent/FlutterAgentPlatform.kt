@@ -4,7 +4,7 @@ import android.app.Activity
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
-class FlutterAgentPlatform(
+internal class FlutterAgentPlatform(
     private val activity: Activity,
     private val toolDispatcher: NativeToolDispatcher = NativeToolDispatcher.shared,
 ) {

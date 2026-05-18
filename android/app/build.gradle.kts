@@ -62,7 +62,7 @@ android {
 
     defaultConfig {
         applicationId = resolvedAppId
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 21)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -84,6 +84,8 @@ android {
 }
 
 dependencies {
+    implementation("com.github.Krosxx:Android-Auto-Api:4.5.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4")
     testImplementation("junit:junit:4.13.2")
 }
 

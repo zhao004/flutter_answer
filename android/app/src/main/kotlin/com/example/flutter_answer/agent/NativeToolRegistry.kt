@@ -230,7 +230,7 @@ object NativeToolRegistry {
         toolName: String,
         arguments: Map<String, Any?>,
     ): Map<String, Any?> {
-        val startedAt = SystemClock.uptimeMillis()
+        val startedAt = currentTimeMs()
         val tool = toolsByName[toolName]
         if (tool == null) {
             val payload = mapOf(
@@ -245,7 +245,7 @@ object NativeToolRegistry {
                 message = payload["message"]?.toString(),
                 result = payload,
                 startedAt = startedAt,
-                finishedAt = SystemClock.uptimeMillis(),
+                finishedAt = currentTimeMs(),
             ).toMap()
         }
 
@@ -265,8 +265,17 @@ object NativeToolRegistry {
             message = result["message"]?.toString(),
             result = result,
             startedAt = startedAt,
-            finishedAt = SystemClock.uptimeMillis(),
+            finishedAt = currentTimeMs(),
         ).toMap()
+    }
+
+    private fun currentTimeMs(): Long {
+        // Android 运行时使用单调时钟；JVM 单测没有 mock SystemClock 时退回墙钟，避免测试环境异常。
+        return runCatching {
+            SystemClock.uptimeMillis()
+        }.getOrElse {
+            System.currentTimeMillis()
+        }
     }
 
     private fun emptySchema(): Map<String, Any?> {

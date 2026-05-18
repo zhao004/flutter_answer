@@ -6,7 +6,7 @@
 
     <application
             android:label="AI自动答题"
-            android:name="${applicationName}"
+            android:name=".FlutterAnswerApplication"
             android:icon="@mipmap/ic_launcher">
         <activity
                 android:name=".MainActivity"

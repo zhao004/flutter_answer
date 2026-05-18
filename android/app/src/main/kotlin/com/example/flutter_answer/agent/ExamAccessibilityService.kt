@@ -1,13 +1,15 @@
 package com.example.flutter_answer.agent
 
-import android.accessibilityservice.AccessibilityService
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import cn.vove7.andro_accessibility_api.AccessibilityApi
 
-class ExamAccessibilityService : AccessibilityService() {
+class ExamAccessibilityService : AccessibilityApi() {
+
+    override val enableListenPageUpdate: Boolean = true
 
     companion object {
         @Volatile
@@ -25,8 +27,15 @@ class ExamAccessibilityService : AccessibilityService() {
         AgentEventBus.serviceStatus(AccessibilityAgent.peekServiceStatus())
     }
 
+    override fun onCreate() {
+        // 库快捷 API 会通过 baseService 访问当前服务；提前赋值可覆盖不同系统的回调时序差异。
+        baseService = this
+        super.onCreate()
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         lastEventAtMs = SystemClock.uptimeMillis()
+        super.onAccessibilityEvent(event)
     }
 
     override fun onInterrupt() {
@@ -36,6 +45,9 @@ class ExamAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         if (instance === this) {
             instance = null
+        }
+        if (baseService === this) {
+            baseService = null
         }
         AgentEventBus.log("warn", "无障碍服务已销毁。")
         AgentEventBus.serviceStatus(AccessibilityAgent.peekServiceStatus())
