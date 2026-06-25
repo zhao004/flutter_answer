@@ -44,7 +44,7 @@ void main() {
           apiKey: 'sk-test',
         ),
         onStatus: (_) {},
-        onLog: (_, __) {},
+        onLog: (String level, String message) {},
         onToolResult: (_) {},
       );
 
@@ -61,7 +61,8 @@ class _FakeAgentPlatformGateway implements AgentPlatformGateway {
   final List<NativeToolDefinition> _tools;
 
   @override
-  Stream<NativePlatformEvent> events() => const Stream<NativePlatformEvent>.empty();
+  Stream<NativePlatformEvent> events() =>
+      const Stream<NativePlatformEvent>.empty();
 
   @override
   Future<List<NativeToolDefinition>> listTools() async => _tools;

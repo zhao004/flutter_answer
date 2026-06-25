@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
 import 'package:flutter_answer/app/agent/data/agent_config_store.dart';
 import 'package:flutter_answer/app/agent/data/agent_platform_gateway.dart';
 import 'package:flutter_answer/app/agent/domain/models/agent_config.dart';
