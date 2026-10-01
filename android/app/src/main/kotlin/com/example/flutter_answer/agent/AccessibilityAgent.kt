@@ -3,25 +3,40 @@ package com.example.flutter_answer.agent
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Base64
+import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 object AccessibilityAgent {
 
-    private const val stableWindowMs = 350L
-    private const val actionPostCheckTimeoutMs = 1200L
-    private const val actionPostCheckPollMs = 80L
+    private const val stableWindowMs = 180L
+    private const val actionPostCheckTimeoutMs = 800L
+    private const val actionPostCheckPollMs = 50L
+    private const val toggleVerifyTimeoutMs = 600L
+    private const val toggleVerifyPollMs = 40L
+    private const val inputVerifyTimeoutMs = 420L
+    private const val inputVerifyPollMs = 40L
     private const val uiFingerprintNodeLimit = 220
     private const val uiFingerprintTextLimit = 48
     private const val minMatchScore = 25
     private const val actionCacheMaxSize = 80
     private const val minGestureTapSizePx = 48
-    private const val inputActivationWaitMs = 140L
-    private const val inputBlurWaitMs = 100L
+    private const val inputActivationWaitMs = 100L
+    private const val inputBlurWaitMs = 80L
+    private const val questionImageCaptureTimeoutMs = 2000L
+    private const val questionImageMaxDimension = 1280
+    private const val questionImageJpegQuality = 82
     private val blankHintPattern = Regex("^第\\s*\\d{1,3}\\s*空[:：]?$")
     private val inputPlaceholderKeywords = listOf("请输入答案", "请填写答案", "轻点两下来编辑", "未作答", "点击输入", "双击输入")
     private val locatorCache = LinkedHashMap<String, NodeLocator>()
@@ -143,25 +158,14 @@ object AccessibilityAgent {
         transitionTo(AutomationFlowState.PAGE_DETECTING, "开始提取题目上下文。")
         val service = ExamAccessibilityService.instance
             ?: return reportFailure("getQuestionContext", "无障碍服务尚未开启。", "service_unavailable")
-        val root = service.currentRoot()
-            ?: return reportFailure("getQuestionContext", "未获取到可用节点，无法提取题目上下文。", "window_unavailable")
+        if (service.currentRoot() == null) {
+            return reportFailure("getQuestionContext", "未获取到可用节点，无法提取题目上下文。", "window_unavailable")
+        }
 
-        val snapshot = dumpUiTree(root)
-        transitionTo(AutomationFlowState.CONTEXT_ANALYZED, "页面采集完成，进入结构提取。")
-        transitionTo(AutomationFlowState.QUESTION_PARSING, "题目结构化解析中。")
-
-        val context = enrichContextWithCachedActions(QuestionExtractor.extract(snapshot))
-        lastQuestionContext = context
-        rememberScreenContext(
-            summary = ScreenContextSummary(
-                contextSignature = context.contextSignature,
-                confidence = context.structureConfidence,
-                signals = context.structureSignals,
-                regionNames = context.regions.map(UiRegion::region).distinct().sorted(),
-            ),
-            regions = context.regions,
-        )
-        cacheActionLocators(context)
+        val startedAt = System.nanoTime()
+        val context = loadCurrentQuestionContext()
+            ?: return reportFailure("getQuestionContext", "当前窗口不可用，无法提取题目上下文。", "window_unavailable")
+        val totalMs = elapsedMs(startedAt)
 
         when {
             context.needConfirm -> {
@@ -184,7 +188,10 @@ object AccessibilityAgent {
 
         val payload = success(
             message = "结构化上下文已提取，识别到 ${context.options.size} 个选项、${context.inputFields.size} 个输入框。",
-            extra = mapOf("context" to context.toMap()),
+            extra = mapOf(
+                "context" to context.toMap(),
+                "timings" to (context.timings + ("totalMs" to totalMs)),
+            ),
         )
         RecognitionTraceStore.record(
             stage = "question_context",
@@ -194,11 +201,55 @@ object AccessibilityAgent {
             message = payload["message"].toString(),
             payload = mapOf(
                 "needConfirm" to context.needConfirm,
+                "needsVisual" to context.needsVisual,
                 "fingerprint" to context.fingerprint,
+                "timings" to context.timings,
             ),
         )
         AgentEventBus.toolResult("getQuestionContext", true, payload)
         return payload
+    }
+
+    /**
+     * 读取并缓存当前题目上下文。
+     *
+     * 该函数不发送工具事件，供批量答案应用和截图裁剪复用。
+     */
+    private fun loadCurrentQuestionContext(): QuestionContext? {
+        val service = ExamAccessibilityService.instance ?: return null
+        val root = service.currentRoot() ?: return null
+
+        val snapshotStartedAt = System.nanoTime()
+        val snapshot = dumpUiTree(root)
+        val snapshotMs = elapsedMs(snapshotStartedAt)
+        transitionTo(AutomationFlowState.CONTEXT_ANALYZED, "页面采集完成，进入结构提取。")
+        transitionTo(AutomationFlowState.QUESTION_PARSING, "题目结构化解析中。")
+
+        val extractionStartedAt = System.nanoTime()
+        val extracted = QuestionExtractor.extract(snapshot)
+        val extractionMs = elapsedMs(extractionStartedAt)
+        val context = enrichContextWithCachedActions(extracted).copy(
+            timings = linkedMapOf(
+                "snapshotMs" to snapshotMs,
+                "extractionMs" to extractionMs,
+            ),
+        )
+        lastQuestionContext = context
+        rememberScreenContext(
+            summary = ScreenContextSummary(
+                contextSignature = context.contextSignature,
+                confidence = context.structureConfidence,
+                signals = context.structureSignals,
+                regionNames = context.regions.map(UiRegion::region).distinct().sorted(),
+            ),
+            regions = context.regions,
+        )
+        cacheActionLocators(context)
+        return context
+    }
+
+    private fun elapsedMs(startedAtNanos: Long): Long {
+        return ((System.nanoTime() - startedAtNanos) / 1_000_000L).coerceAtLeast(0L)
     }
 
     fun getRecognitionHistory(limit: Int?): Map<String, Any?> {
@@ -213,6 +264,368 @@ object AccessibilityAgent {
         )
         AgentEventBus.toolResult("getRecognitionHistory", true, payload)
         return payload
+    }
+
+    /**
+     * 批量应用结构化答案计划。
+     *
+     * 选项标签和填空序号在应用前会重新映射到当前页面节点，避免缓存计划复用旧节点 id。
+     */
+    fun applyAnswerPlan(
+        fingerprint: String?,
+        selectedOptionLabels: List<String>?,
+        blankAnswers: List<BlankAnswer>?,
+        confidence: Double?,
+        advance: Boolean?,
+    ): Map<String, Any?> {
+        transitionTo(AutomationFlowState.ACTION_EXECUTING, "准备批量应用答案计划。")
+        val safeFingerprint = fingerprint?.trim().orEmpty()
+        if (safeFingerprint.isBlank()) {
+            return reportFailure("applyAnswerPlan", "缺少题目指纹，无法应用答案。", "invalid_arguments")
+        }
+
+        val desiredLabels = selectedOptionLabels.orEmpty()
+            .map(::normalizePlanLabel)
+            .filter(String::isNotBlank)
+        if (desiredLabels.distinct().size != desiredLabels.size) {
+            return reportFailure("applyAnswerPlan", "选项标签存在重复值。", "invalid_answer_plan")
+        }
+        val answers = blankAnswers.orEmpty()
+            .map { answer -> BlankAnswer(order = answer.order, text = answer.text.trim()) }
+        if (answers.any { answer -> answer.order <= 0 || answer.text.isBlank() || answer.text.length > 2000 }) {
+            return reportFailure("applyAnswerPlan", "填空答案序号或文本无效。", "invalid_answer_plan")
+        }
+        if (answers.map(BlankAnswer::order).distinct().size != answers.size) {
+            return reportFailure("applyAnswerPlan", "填空答案存在重复序号。", "invalid_answer_plan")
+        }
+
+        val context = loadCurrentQuestionContext()
+            ?: return reportFailure("applyAnswerPlan", "无法读取当前题目上下文。", "context_unavailable")
+        if (context.pageStage != QuestionPageStage.question) {
+            return reportFailure(
+                "applyAnswerPlan",
+                "当前页面阶段为 ${context.pageStage}，拒绝执行答案写入。",
+                "page_stage_protected",
+            )
+        }
+        if (context.fingerprint != safeFingerprint) {
+            QuestionFingerprintCache.invalidate(safeFingerprint)
+            return reportFailure("applyAnswerPlan", "题目页面已变化，答案计划已失效。", "context_changed")
+        }
+
+        val optionGroups = context.options.groupBy { option -> normalizePlanLabel(option.label) }
+        if (optionGroups.values.any { group -> group.size > 1 }) {
+            return reportFailure("applyAnswerPlan", "当前页面存在重复选项标签，无法安全应用答案。", "ambiguous_options")
+        }
+        val unknownLabels = desiredLabels.filter { label -> optionGroups[label].isNullOrEmpty() }
+        if (unknownLabels.isNotEmpty()) {
+            return reportFailure(
+                "applyAnswerPlan",
+                "答案包含当前页面不存在的选项：${unknownLabels.joinToString()}。",
+                "invalid_option_label",
+            )
+        }
+        if (context.options.isNotEmpty() && desiredLabels.isEmpty()) {
+            return reportFailure("applyAnswerPlan", "选择题缺少目标选项。", "invalid_answer_plan")
+        }
+
+        val inputOrders = context.inputFields.mapNotNull { input -> input.order }
+        if (inputOrders.size != context.inputFields.size || inputOrders.distinct().size != inputOrders.size) {
+            return reportFailure("applyAnswerPlan", "页面输入框缺少稳定且唯一的顺序，无法安全写入。", "input_order_unavailable")
+        }
+        val inputByOrder = context.inputFields.associateBy { input -> input.order }
+        val answerByOrder = answers.associateBy(BlankAnswer::order)
+        if (context.inputFields.isNotEmpty()) {
+            val expectedOrders = inputByOrder.keys.filterNotNull().toSet()
+            val actualOrders = answerByOrder.keys
+            if (expectedOrders != actualOrders) {
+                return reportFailure(
+                    "applyAnswerPlan",
+                    "填空答案序号与当前页面输入框不一致。",
+                    "blank_order_mismatch",
+                )
+            }
+        } else if (answers.isNotEmpty()) {
+            return reportFailure("applyAnswerPlan", "当前题目没有可写入的输入框。", "invalid_answer_plan")
+        }
+
+        var appliedActionCount = 0
+        context.options.forEach { option ->
+            val label = normalizePlanLabel(option.label)
+            val targetChecked = label in desiredLabels
+            if (option.checked != targetChecked) {
+                val checkableNode = locatorCache[option.id]?.checkable == true
+                val actionResult = if (checkableNode) {
+                    toggleElement(option.id, targetChecked)
+                } else {
+                    // WebView 选项经常只是可点击 View，没有 checkable 状态；回退为点击后由整页回读确认。
+                    clickElement(option.id)
+                }
+                if (actionResult["ok"] != true) {
+                    QuestionFingerprintCache.invalidate(safeFingerprint)
+                    return failureWithDetails(
+                        message = "选项 $label 应用失败：${actionResult["message"]}",
+                        code = "answer_apply_failed",
+                        details = mapOf("failedOptionLabel" to label, "cause" to actionResult),
+                    )
+                }
+                appliedActionCount += 1
+            }
+        }
+
+        context.inputFields
+            .sortedWith(compareBy<InputFieldRef> { input -> input.order ?: Int.MAX_VALUE })
+            .forEach { input ->
+                val desiredText = answerByOrder[input.order]?.text ?: return@forEach
+                if (!isInputPlanAlreadySatisfied(input, desiredText)) {
+                    val setTextResult = setText(input.id, desiredText)
+                    if (setTextResult["ok"] != true) {
+                        QuestionFingerprintCache.invalidate(safeFingerprint)
+                        return failureWithDetails(
+                            message = "第 ${input.order} 空写入失败：${setTextResult["message"]}",
+                            code = "answer_apply_failed",
+                            details = mapOf("failedBlankOrder" to input.order, "cause" to setTextResult),
+                        )
+                    }
+                    appliedActionCount += 1
+                }
+            }
+
+        val refreshedContext = if (appliedActionCount > 0) {
+            loadCurrentQuestionContext() ?: context
+        } else {
+            context
+        }
+        val verificationError = verifyAppliedPlan(
+            context = refreshedContext,
+            desiredLabels = desiredLabels,
+            answerByOrder = answerByOrder,
+        )
+        if (verificationError != null) {
+            QuestionFingerprintCache.invalidate(safeFingerprint)
+            return reportFailure("applyAnswerPlan", verificationError, "answer_verification_failed")
+        }
+
+        val plan = AnswerPlan(
+            fingerprint = safeFingerprint,
+            selectedOptionLabels = desiredLabels.sorted(),
+            blankAnswers = answers.sortedBy(BlankAnswer::order),
+            confidence = confidence
+                ?.takeIf { value -> value.isFinite() }
+                ?.coerceIn(0.0, 1.0)
+                ?: 1.0,
+            needsManualReview = false,
+        )
+        QuestionFingerprintCache.store(safeFingerprint, plan)
+
+        val finalPageStage = refreshedContext.pageStage
+        if (finalPageStage in setOf(
+                QuestionPageStage.submitReady,
+                QuestionPageStage.submitDialog,
+                QuestionPageStage.submitWarning,
+            )
+        ) {
+            val payload = success(
+                message = "答案已应用，当前页面已进入提交相关阶段，已停止自动推进。",
+                extra = mapOf(
+                    "answerApplied" to true,
+                    "advanced" to false,
+                    "manualReviewRequired" to true,
+                    "finalPageStage" to finalPageStage,
+                    "appliedActionCount" to appliedActionCount,
+                ),
+            )
+            AgentEventBus.log("warn", payload["message"].toString())
+            AgentEventBus.toolResult("applyAnswerPlan", true, payload)
+            return payload
+        }
+
+        if (advance != true) {
+            val payload = success(
+                message = "答案已验证并缓存。",
+                extra = mapOf(
+                    "answerApplied" to true,
+                    "advanced" to false,
+                    "manualReviewRequired" to false,
+                    "finalPageStage" to finalPageStage,
+                    "appliedActionCount" to appliedActionCount,
+                ),
+            )
+            AgentEventBus.toolResult("applyAnswerPlan", true, payload)
+            return payload
+        }
+
+        val nextAction = refreshedContext.actions.firstOrNull { action -> action.kind == "next" }
+        if (nextAction == null) {
+            val payload = success(
+                message = "答案已验证并缓存，但当前页面未找到可用的下一题动作。",
+                extra = mapOf(
+                    "answerApplied" to true,
+                    "advanced" to false,
+                    "manualReviewRequired" to true,
+                    "finalPageStage" to finalPageStage,
+                    "appliedActionCount" to appliedActionCount,
+                ),
+            )
+            AgentEventBus.log("warn", payload["message"].toString())
+            AgentEventBus.toolResult("applyAnswerPlan", true, payload)
+            return payload
+        }
+
+        val clickResult = clickElement(nextAction.id)
+        val advanced = clickResult["ok"] == true
+        if (!advanced) {
+            return failureWithDetails(
+                message = "答案已应用并缓存，但下一题推进失败：${clickResult["message"]}",
+                code = "next_action_failed",
+                details = mapOf(
+                    "answerApplied" to true,
+                    "advanced" to false,
+                    "nextActionId" to nextAction.id,
+                    "cause" to clickResult,
+                ),
+            )
+        }
+
+        val payload = success(
+            message = "答案已应用并完成下一题推进。",
+            extra = mapOf(
+                "answerApplied" to true,
+                "advanced" to true,
+                "manualReviewRequired" to false,
+                "nextActionId" to nextAction.id,
+                "finalPageStage" to finalPageStage,
+                "appliedActionCount" to appliedActionCount,
+            ),
+        )
+        AgentEventBus.toolResult("applyAnswerPlan", true, payload)
+        return payload
+    }
+
+    /**
+     * 截取题目相关区域，供多模态模型在文本识别置信度不足时补充理解。
+     *
+     * 图片只在内存中编码为 base64，不写入文件、不进入日志和识别轨迹。
+     */
+    fun captureQuestionImage(): Map<String, Any?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return failure("当前 Android 版本不支持无障碍服务截图，已降级为文本识别。", "unsupported_platform")
+        }
+        val service = ExamAccessibilityService.instance
+            ?: return failure("无障碍服务尚未开启，无法截图。", "service_unavailable")
+
+        val context = lastQuestionContext ?: loadCurrentQuestionContext()
+        val bitmapRef = AtomicReference<Bitmap?>()
+        val errorRef = AtomicReference<String?>()
+        val latch = CountDownLatch(1)
+        val captureStartedAt = SystemClock.uptimeMillis()
+
+        try {
+            service.takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                service.mainExecutor,
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                        val buffer = screenshot.hardwareBuffer
+                        try {
+                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
+                            val softwareBitmap = hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                            bitmapRef.set(softwareBitmap)
+                        } catch (error: Throwable) {
+                            errorRef.set(error.message ?: "screenshot_decode_failed")
+                        } finally {
+                            buffer.close()
+                            latch.countDown()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        errorRef.set("screenshot_error_$errorCode")
+                        latch.countDown()
+                    }
+                },
+            )
+        } catch (error: Throwable) {
+            errorRef.set(error.message ?: "screenshot_request_failed")
+        }
+
+        val completed = runCatching {
+            latch.await(questionImageCaptureTimeoutMs, TimeUnit.MILLISECONDS)
+        }.getOrDefault(false)
+        if (!completed) {
+            return failure("截图请求超时，已降级为文本识别。", "screenshot_timeout")
+        }
+        val screenshotBitmap = bitmapRef.get()
+        if (screenshotBitmap == null) {
+            return failure(
+                "截图失败：${errorRef.get() ?: "unknown_error"}，已降级为文本识别。",
+                "screenshot_failed",
+            )
+        }
+
+        val captureBounds = resolveCaptureBounds(context, screenshotBitmap.width, screenshotBitmap.height)
+        var workingBitmap: Bitmap? = null
+        var scaledBitmap: Bitmap? = null
+        try {
+            val sourceBitmap = if (captureBounds != null && !captureBounds.isEmpty) {
+                Bitmap.createBitmap(
+                    screenshotBitmap,
+                    captureBounds.left,
+                    captureBounds.top,
+                    captureBounds.width(),
+                    captureBounds.height(),
+                )
+            } else {
+                screenshotBitmap
+            }
+            workingBitmap = sourceBitmap
+            scaledBitmap = scaleQuestionImageIfNeeded(sourceBitmap)
+            val output = ByteArrayOutputStream()
+            val compressed = scaledBitmap.compress(
+                Bitmap.CompressFormat.JPEG,
+                questionImageJpegQuality,
+                output,
+            )
+            if (!compressed) {
+                return failure("截图压缩失败，已降级为文本识别。", "screenshot_encode_failed")
+            }
+            val bytes = output.toByteArray()
+            val payload = success(
+                message = "题目区域截图已生成，将用于多模态识别。",
+                extra = mapOf(
+                    "imageBase64" to Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    "mimeType" to "image/jpeg",
+                    "cropped" to (captureBounds != null && !captureBounds.isEmpty),
+                    "bounds" to listOfNotNull(
+                        captureBounds?.left,
+                        captureBounds?.top,
+                        captureBounds?.right,
+                        captureBounds?.bottom,
+                    ),
+                    "imageWidth" to scaledBitmap.width,
+                    "imageHeight" to scaledBitmap.height,
+                    "captureMs" to (SystemClock.uptimeMillis() - captureStartedAt),
+                ),
+            )
+            AgentEventBus.log(
+                "info",
+                "题目截图已生成：${scaledBitmap.width}x${scaledBitmap.height}，耗时 ${payload["captureMs"]}ms。",
+            )
+            return payload
+        } catch (error: Throwable) {
+            return failure(
+                "截图处理失败：${error.message ?: "unknown_error"}，已降级为文本识别。",
+                "screenshot_processing_failed",
+            )
+        } finally {
+            if (scaledBitmap != null && scaledBitmap !== workingBitmap) {
+                scaledBitmap.recycle()
+            }
+            if (workingBitmap != null && workingBitmap !== screenshotBitmap) {
+                workingBitmap.recycle()
+            }
+            screenshotBitmap.recycle()
+        }
     }
 
     fun clickElement(elementId: String?): Map<String, Any?> {
@@ -408,7 +821,6 @@ object AccessibilityAgent {
             )
 
         val currentChecked = toggleNode.isChecked
-        val beforeFingerprint = captureUiFingerprint(ExamAccessibilityService.instance?.currentRoot())
         val result = if (currentChecked == targetChecked) {
             transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "节点状态已满足，无需切换。")
             success(
@@ -424,19 +836,17 @@ object AccessibilityAgent {
             failure("切换节点 $elementId 失败。", "toggle_failed")
         } else {
             transitionTo(AutomationFlowState.RESULT_VERIFYING, "勾选切换已发送，开始回读校验。")
-            val progress = observeUiProgress(beforeFingerprint)
-            val refreshedChecked = findNodeById(elementId)?.let(::findToggleNode)?.isChecked
-            if (refreshedChecked == null || refreshedChecked == targetChecked) {
+            val verification = waitForToggleState(elementId, targetChecked)
+            if (verification.checked == targetChecked) {
                 transitionTo(AutomationFlowState.NEXT_PAGE_WAITING, "勾选切换回读通过。")
                 success(
                     message = "已切换节点：$elementId。",
                     extra = mapOf(
                         "elementId" to elementId,
-                        "checked" to (refreshedChecked ?: targetChecked),
-                        "postCheckChanged" to (progress.changed || currentChecked != (refreshedChecked
-                            ?: targetChecked)),
+                        "checked" to verification.checked,
+                        "postCheckChanged" to (currentChecked != verification.checked),
                         "postCheckSatisfied" to true,
-                        "postCheckWaitedMs" to progress.waitedMs,
+                        "postCheckWaitedMs" to verification.waitedMs,
                     ),
                 )
             } else {
@@ -504,7 +914,7 @@ object AccessibilityAgent {
             val scrollNode = findScrollableNode(root) ?: return@repeat
             if (scrollNode.performAction(action)) {
                 stepsPerformed += 1
-                Thread.sleep(120)
+                Thread.sleep(80)
             }
         }
 
@@ -841,16 +1251,22 @@ object AccessibilityAgent {
             return UiSnapshot(
                 screen = mapOf(
                     "timestamp" to System.currentTimeMillis(),
+                    "rootBounds" to listOf(0, 0, 0, 0),
                 ),
                 elements = emptyList(),
             )
         }
 
+        val rootRect = Rect().also(root::getBoundsInScreen)
         val elements = mutableListOf<UiElement>()
-        traverse(root, 0, elements, IdGenerator(), refreshLocatorCache)
+        traverse(root, 0, elements, IdGenerator(), refreshLocatorCache, null)
         return UiSnapshot(
             screen = mapOf(
                 "timestamp" to System.currentTimeMillis(),
+                "rootBounds" to listOf(rootRect.left, rootRect.top, rootRect.right, rootRect.bottom),
+                "width" to rootRect.width(),
+                "height" to rootRect.height(),
+                "packageName" to root.packageName?.toString(),
             ),
             elements = elements,
         )
@@ -862,9 +1278,15 @@ object AccessibilityAgent {
         out: MutableList<UiElement>,
         idGenerator: IdGenerator,
         shouldCacheLocator: Boolean,
+        parentId: String?,
     ) {
         val rect = Rect().also(node::getBoundsInScreen)
         val id = idGenerator.next()
+        val hintText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            node.hintText?.toString()
+        } else {
+            null
+        }
         val element = UiElement(
             id = id,
             text = node.text?.toString(),
@@ -880,6 +1302,11 @@ object AccessibilityAgent {
             scrollable = node.isScrollable,
             bounds = listOf(rect.left, rect.top, rect.right, rect.bottom),
             depth = depth,
+            parentId = parentId,
+            visibleToUser = node.isVisibleToUser,
+            focused = node.isFocused,
+            selected = node.isSelected,
+            hintText = hintText,
         )
 
         if (shouldCacheLocator) {
@@ -902,7 +1329,7 @@ object AccessibilityAgent {
 
         for (index in 0 until node.childCount) {
             node.getChild(index)?.let { child ->
-                traverse(child, depth + 1, out, idGenerator, shouldCacheLocator)
+                traverse(child, depth + 1, out, idGenerator, shouldCacheLocator, id)
             }
         }
     }
@@ -1128,17 +1555,24 @@ object AccessibilityAgent {
                 continue
             }
             writeSent = true
-            Thread.sleep(140)
-            val refreshedNode = findNodeById(elementId)
-            lastReadText = extractNodeText(refreshedNode)
-            if (!isInputTextMatched(lastReadText, text)) {
+            val verification = waitForInputText(
+                elementId = elementId,
+                expectedText = text,
+                timeoutMs = inputVerifyTimeoutMs,
+            )
+            lastReadText = verification.lastReadText
+            if (!verification.matched) {
                 continue
             }
             // 输入后主动清焦点，触发部分题库页面的“失焦保存”逻辑，减少下一题后答案丢失。
-            clearInputFocus(refreshedNode)
-            Thread.sleep(80)
-            lastReadText = extractNodeText(findNodeById(elementId))
-            matched = isInputTextMatched(lastReadText, text)
+            clearInputFocus(findNodeById(elementId))
+            val blurVerification = waitForInputText(
+                elementId = elementId,
+                expectedText = text,
+                timeoutMs = inputBlurWaitMs + inputVerifyPollMs,
+            )
+            lastReadText = blurVerification.lastReadText
+            matched = blurVerification.matched
             if (matched) {
                 break
             }
@@ -1166,6 +1600,47 @@ object AccessibilityAgent {
             Thread.sleep(inputBlurWaitMs)
         }
         return cleared || !target.isFocused
+    }
+
+    private fun waitForToggleState(elementId: String, targetChecked: Boolean): ToggleVerification {
+        val startedAt = SystemClock.uptimeMillis()
+        var latestChecked: Boolean? = null
+        while (SystemClock.uptimeMillis() - startedAt < toggleVerifyTimeoutMs) {
+            latestChecked = findNodeById(elementId)?.let(::findToggleNode)?.isChecked
+            if (latestChecked == targetChecked) {
+                break
+            }
+            Thread.sleep(toggleVerifyPollMs)
+        }
+        return ToggleVerification(
+            checked = latestChecked,
+            waitedMs = SystemClock.uptimeMillis() - startedAt,
+        )
+    }
+
+    private fun waitForInputText(
+        elementId: String,
+        expectedText: String,
+        timeoutMs: Long,
+    ): InputVerification {
+        val startedAt = SystemClock.uptimeMillis()
+        var latestText = ""
+        while (SystemClock.uptimeMillis() - startedAt < timeoutMs) {
+            latestText = extractNodeText(findNodeById(elementId))
+            if (isInputTextMatched(latestText, expectedText)) {
+                return InputVerification(
+                    matched = true,
+                    lastReadText = latestText,
+                    waitedMs = SystemClock.uptimeMillis() - startedAt,
+                )
+            }
+            Thread.sleep(inputVerifyPollMs)
+        }
+        return InputVerification(
+            matched = false,
+            lastReadText = latestText,
+            waitedMs = SystemClock.uptimeMillis() - startedAt,
+        )
     }
 
     private fun isInputTextMatched(actual: String, expected: String): Boolean {
@@ -1522,6 +1997,106 @@ object AccessibilityAgent {
         )
     }
 
+    private fun normalizePlanLabel(value: String): String {
+        val normalized = value.trim()
+        return if (normalized.length == 1 && normalized[0].isLetter()) {
+            normalized.uppercase()
+        } else {
+            normalized
+        }
+    }
+
+    private fun isInputPlanAlreadySatisfied(input: InputFieldRef, desiredText: String): Boolean {
+        val currentText = input.text.orEmpty()
+        return currentText.isNotBlank() && isInputTextMatched(currentText, desiredText)
+    }
+
+    private fun verifyAppliedPlan(
+        context: QuestionContext,
+        desiredLabels: List<String>,
+        answerByOrder: Map<Int, BlankAnswer>,
+    ): String? {
+        val optionByLabel = context.options.associateBy { option -> normalizePlanLabel(option.label) }
+        desiredLabels.forEach { label ->
+            val option = optionByLabel[label] ?: return "选项 $label 在校验阶段不存在。"
+            if (!option.checked) {
+                return "选项 $label 未进入目标选中状态。"
+            }
+        }
+        answerByOrder.forEach { (order, answer) ->
+            val input = context.inputFields.firstOrNull { field -> field.order == order }
+                ?: return "第 $order 空在校验阶段不存在。"
+            if (!isInputPlanAlreadySatisfied(input, answer.text)) {
+                return "第 $order 空回读内容与目标答案不一致。"
+            }
+        }
+        return null
+    }
+
+    private fun failureWithDetails(
+        message: String,
+        code: String,
+        details: Map<String, Any?> = emptyMap(),
+    ): Map<String, Any?> {
+        val payload = linkedMapOf<String, Any?>(
+            "ok" to false,
+            "code" to code,
+            "message" to message,
+        ).apply {
+            putAll(details)
+        }
+        AgentEventBus.log("error", message)
+        return payload
+    }
+
+    private fun resolveCaptureBounds(
+        context: QuestionContext?,
+        imageWidth: Int,
+        imageHeight: Int,
+    ): Rect? {
+        if (imageWidth <= 0 || imageHeight <= 0 || context == null) {
+            return null
+        }
+        val relevantRegions = context.regions.filter { region ->
+            region.region in setOf("question", "options", "input")
+        }
+        if (relevantRegions.isEmpty()) {
+            return null
+        }
+        var left = Int.MAX_VALUE
+        var top = Int.MAX_VALUE
+        var right = Int.MIN_VALUE
+        var bottom = Int.MIN_VALUE
+        relevantRegions.forEach { region ->
+            val bounds = region.bounds
+            if (bounds.size < 4) {
+                return@forEach
+            }
+            left = minOf(left, bounds[0])
+            top = minOf(top, bounds[1])
+            right = maxOf(right, bounds[2])
+            bottom = maxOf(bottom, bounds[3])
+        }
+        if (left >= right || top >= bottom) {
+            return null
+        }
+        val rect = Rect(left, top, right, bottom)
+        rect.inset(-24, -24)
+        rect.intersect(0, 0, imageWidth, imageHeight)
+        return rect.takeUnless(Rect::isEmpty)
+    }
+
+    private fun scaleQuestionImageIfNeeded(bitmap: Bitmap): Bitmap {
+        val longestSide = maxOf(bitmap.width, bitmap.height)
+        if (longestSide <= questionImageMaxDimension) {
+            return bitmap
+        }
+        val scale = questionImageMaxDimension.toFloat() / longestSide.toFloat()
+        val targetWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+    }
+
     private fun success(
         message: String,
         extra: Map<String, Any?> = emptyMap(),
@@ -1568,5 +2143,16 @@ object AccessibilityAgent {
         val matched: Boolean,
         val attempts: Int,
         val lastReadText: String,
+    )
+
+    private data class InputVerification(
+        val matched: Boolean,
+        val lastReadText: String,
+        val waitedMs: Long,
+    )
+
+    private data class ToggleVerification(
+        val checked: Boolean?,
+        val waitedMs: Long,
     )
 }

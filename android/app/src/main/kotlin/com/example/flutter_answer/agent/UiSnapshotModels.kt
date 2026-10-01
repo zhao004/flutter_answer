@@ -24,6 +24,11 @@ data class UiElement(
     val scrollable: Boolean,
     val bounds: List<Int>,
     val depth: Int,
+    val parentId: String? = null,
+    val visibleToUser: Boolean = true,
+    val focused: Boolean = false,
+    val selected: Boolean = false,
+    val hintText: String? = null,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "id" to id,
@@ -40,6 +45,11 @@ data class UiElement(
         "scrollable" to scrollable,
         "bounds" to bounds,
         "depth" to depth,
+        "parentId" to parentId,
+        "visibleToUser" to visibleToUser,
+        "focused" to focused,
+        "selected" to selected,
+        "hintText" to hintText,
     )
 }
 
@@ -141,11 +151,13 @@ data class QuestionCacheProbe(
     val hit: Boolean,
     val seenCount: Int,
     val fingerprint: String,
+    val answerPlan: AnswerPlan? = null,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "hit" to hit,
         "seenCount" to seenCount,
         "fingerprint" to fingerprint,
+        "answerPlan" to answerPlan?.toMap(),
     )
 }
 
@@ -168,6 +180,9 @@ data class QuestionContext(
     val cacheProbe: QuestionCacheProbe,
     val regions: List<UiRegion>,
     val structureSignals: Map<String, Double>,
+    val fieldConfidence: Map<String, Double> = emptyMap(),
+    val needsVisual: Boolean = false,
+    val timings: Map<String, Long> = emptyMap(),
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "contextSignature" to contextSignature,
@@ -188,6 +203,9 @@ data class QuestionContext(
         "cache" to cacheProbe.toMap(),
         "regions" to regions.map(UiRegion::toMap),
         "structureSignals" to structureSignals,
+        "fieldConfidence" to fieldConfidence,
+        "needsVisual" to needsVisual,
+        "timings" to timings,
     )
 }
 

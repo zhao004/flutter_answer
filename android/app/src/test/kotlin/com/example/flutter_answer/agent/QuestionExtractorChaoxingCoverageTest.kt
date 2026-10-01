@@ -16,6 +16,8 @@ class QuestionExtractorChaoxingCoverageTest {
         assertEquals(listOf("iOS", "Windows", "Android", "Linux"), context.options.map(QuestionOption::text))
         assertTrue(context.actions.any { action -> action.kind == "next" && action.text.contains("下一题") })
         assertFalse(context.question.contains("题干"))
+        assertTrue((context.fieldConfidence["options"] ?: 0.0) > 0.8)
+        assertFalse(context.needsVisual)
     }
 
     @Test
@@ -60,6 +62,8 @@ class QuestionExtractorChaoxingCoverageTest {
         assertFalse(context.question.contains("请输入答案"))
         assertFalse(context.question.contains("轻点两下来编辑"))
         assertTrue(context.options.isEmpty())
+        assertTrue((context.fieldConfidence["inputs"] ?: 0.0) > 0.8)
+        assertFalse(context.needsVisual)
     }
 
     @Test

@@ -8,7 +8,8 @@ import '../models/agent_config.dart';
 import '../models/agent_run_state.dart';
 import '../models/native_tool_definition.dart';
 import '../models/native_tool_execution.dart';
-import 'provider_url_resolver.dart';
+import 'agent_chat_model_factory.dart';
+import 'agent_runtime_service.dart';
 import 'submit_page_stop_guard.dart';
 
 typedef AgentStatusCallback = void Function(AgentRunState state);
@@ -16,7 +17,7 @@ typedef AgentLogCallback = void Function(String level, String message);
 typedef AgentToolResultCallback =
     void Function(NativeToolExecutionResult result);
 
-class LangChainAgentRuntimeService {
+class LangChainAgentRuntimeService implements AgentRuntimeService {
   LangChainAgentRuntimeService({required AgentPlatformGateway platformGateway})
     : _platformGateway = platformGateway;
 
@@ -27,10 +28,12 @@ class LangChainAgentRuntimeService {
 
   bool _stopRequested = false;
 
+  @override
   void requestStop() {
     _stopRequested = true;
   }
 
+  @override
   Future<AgentRunState> run({
     required AgentConfig config,
     required AgentStatusCallback onStatus,
@@ -260,16 +263,7 @@ class LangChainAgentRuntimeService {
   }
 
   ChatOpenAI _buildModel(AgentConfig config) {
-    final baseUrl = ProviderUrlResolver.resolveBaseUrl(config.providerUrl);
-    final options = ChatOpenAIOptions(model: config.model, temperature: 0);
-    if (baseUrl.isEmpty) {
-      return ChatOpenAI(apiKey: config.apiKey, defaultOptions: options);
-    }
-    return ChatOpenAI(
-      apiKey: config.apiKey,
-      baseUrl: baseUrl,
-      defaultOptions: options,
-    );
+    return buildAgentChatModel(config);
   }
 
   Tool _createTool({

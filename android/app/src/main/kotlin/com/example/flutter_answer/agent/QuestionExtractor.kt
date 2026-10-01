@@ -2,6 +2,15 @@ package com.example.flutter_answer.agent
 
 object QuestionExtractor {
 
+    private val whitespacePattern = Regex("\\s+")
+    private val invisibleCharPattern = Regex("[\\u200B-\\u200D\\u2060\\uFEFF]")
+    private val htmlWhitespaceEntityPattern = Regex("&(nbsp|ensp|emsp);", RegexOption.IGNORE_CASE)
+    private val htmlAmpPattern = Regex("&amp;", RegexOption.IGNORE_CASE)
+    private val htmlLtPattern = Regex("&lt;", RegexOption.IGNORE_CASE)
+    private val htmlGtPattern = Regex("&gt;", RegexOption.IGNORE_CASE)
+    private val htmlQuotePattern = Regex("&quot;", RegexOption.IGNORE_CASE)
+    private val htmlAposPattern = Regex("&#39;|&apos;", RegexOption.IGNORE_CASE)
+
     private const val resumeEntryStructureConfidence = 0.72
     private const val resumeEntryConfidence = 0.76
     private const val submitReadyStructureConfidence = 0.74
@@ -57,7 +66,7 @@ object QuestionExtractor {
 
     fun extract(snapshot: UiSnapshot): QuestionContext {
         val regions = UiRegionLocator.locate(snapshot)
-        val textElements = snapshot.elements.filter { !it.text.isNullOrBlank() }
+        val textElements = snapshot.elements.filter { element -> element.visibleToUser && !element.text.isNullOrBlank() }
         val elementById = snapshot.elements.associateBy(UiElement::id)
         val questionRegionIds = regionElementIds(regions, "question")
         val optionRegionIds = regionElementIds(regions, "options")
@@ -264,7 +273,12 @@ object QuestionExtractor {
             rawCleanedQuestion
         }
         val normalizedQuestion = normalizeForMatching(cleanedQuestion)
-        val attachments = collectAttachments(snapshot)
+        val attachments = collectAttachments(
+            snapshot = snapshot,
+            questionRegionIds = questionRegionIds,
+            optionRegionIds = optionRegionIds,
+            inputRegionIds = inputRegionIds,
+        )
         val blanks = collectBlanks(cleanedQuestion, inputs, snapshot.elements)
         val required = detectRequired(cleanedQuestion, snapshot)
 
@@ -327,6 +341,21 @@ object QuestionExtractor {
             submitDialogPage = submitDialogPage,
             submitWarningPage = submitWarningPage,
         )
+        val fieldConfidence = buildFieldConfidence(
+            question = cleanedQuestion,
+            options = options,
+            inputs = inputs,
+            blanks = blanks,
+            actions = actions,
+            structureConfidence = structureConfidence,
+        )
+        val needsVisual = pageStage == QuestionPageStage.question && (
+            confidence < 0.64 ||
+                cleanedQuestion.isBlank() ||
+                attachments.any { attachment -> attachment.type == "image" || attachment.type == "webview" } ||
+                (fieldConfidence["options"] ?: 1.0) < 0.6 ||
+                (fieldConfidence["inputs"] ?: 1.0) < 0.6
+            )
         val needConfirm = pageStage == QuestionPageStage.question && confidence < 0.64
         val contextSignature = buildContextSignature(
             regions = regions,
@@ -338,7 +367,7 @@ object QuestionExtractor {
             normalizedQuestion = normalizedQuestion,
             options = options,
             blanks = blanks,
-            inputCount = inputs.size,
+            inputs = inputs,
         )
         val cacheProbe = QuestionFingerprintCache.record(fingerprint)
 
@@ -361,23 +390,53 @@ object QuestionExtractor {
             cacheProbe = cacheProbe,
             regions = regions,
             structureSignals = structureSignals,
+            fieldConfidence = fieldConfidence,
+            needsVisual = needsVisual,
         )
     }
 
-    private fun collectAttachments(snapshot: UiSnapshot): List<QuestionAttachment> {
+    private fun collectAttachments(
+        snapshot: UiSnapshot,
+        questionRegionIds: Set<String>,
+        optionRegionIds: Set<String>,
+        inputRegionIds: Set<String>,
+    ): List<QuestionAttachment> {
+        val contentRegionIds = questionRegionIds + optionRegionIds + inputRegionIds
+        val screenBounds = resolveScreenBounds(snapshot)
+        val screenWidth = (screenBounds.getOrNull(2) ?: 0) - (screenBounds.getOrNull(0) ?: 0)
+        val screenHeight = (screenBounds.getOrNull(3) ?: 0) - (screenBounds.getOrNull(1) ?: 0)
+        val screenArea = (screenWidth * screenHeight).coerceAtLeast(1)
         return snapshot.elements
+            .asSequence()
+            .filter { element ->
+                element.visibleToUser && element.bounds.getOrNull(2) != null && element.bounds.getOrNull(3) != null
+            }
             .filter { element ->
                 val className = element.className.orEmpty()
-                className.contains("ImageView", ignoreCase = true) ||
-                    className.contains("WebView", ignoreCase = true) ||
-                    cleanText(element.text).contains("附件") ||
-                    cleanText(element.desc).contains("图片")
+                val text = cleanText(element.text)
+                val desc = cleanText(element.desc)
+                val explicitAttachmentText = text.contains("附件") || desc.contains("附件") || desc.contains("图片")
+                val inContentRegion = element.id in contentRegionIds
+                val left = element.bounds.getOrNull(0) ?: 0
+                val top = element.bounds.getOrNull(1) ?: 0
+                val right = element.bounds.getOrNull(2) ?: 0
+                val bottom = element.bounds.getOrNull(3) ?: 0
+                val area = (right - left).coerceAtLeast(0) * (bottom - top).coerceAtLeast(0)
+                val largeContentImage = inContentRegion && area >= (screenArea * 0.01).toInt()
+                val viewIdImageHint = inContentRegion &&
+                    element.viewId.orEmpty().contains("image", ignoreCase = true)
+                val imageNode = className.contains("ImageView", ignoreCase = true) &&
+                    !className.contains("toolbar", ignoreCase = true) &&
+                    (explicitAttachmentText || largeContentImage || viewIdImageHint)
+                val webViewNode = className.contains("WebView", ignoreCase = true) && explicitAttachmentText
+                imageNode || webViewNode || explicitAttachmentText
             }
             .take(6)
             .map { element ->
+                val className = element.className.orEmpty()
                 val type = when {
-                    element.className.orEmpty().contains("WebView", ignoreCase = true) -> "webview"
-                    element.className.orEmpty().contains("ImageView", ignoreCase = true) -> "image"
+                    className.contains("WebView", ignoreCase = true) -> "webview"
+                    className.contains("ImageView", ignoreCase = true) -> "image"
                     else -> "unknown"
                 }
                 QuestionAttachment(
@@ -386,14 +445,62 @@ object QuestionExtractor {
                     desc = cleanText(element.text).ifBlank { cleanText(element.desc) },
                 )
             }
+            .toList()
+    }
+
+    private fun buildFieldConfidence(
+        question: String,
+        options: List<QuestionOption>,
+        inputs: List<InputFieldRef>,
+        blanks: List<QuestionBlank>,
+        actions: List<QuestionAction>,
+        structureConfidence: Double,
+    ): Map<String, Double> {
+        val questionScore = when {
+            question.length >= 8 -> 0.94
+            question.isNotBlank() -> 0.72
+            else -> 0.18
+        }
+        val optionLabels = options.map { option -> option.label.trim() }.filter(String::isNotBlank)
+        val optionsScore = when {
+            options.isEmpty() -> 0.62
+            options.size < 2 -> 0.45
+            optionLabels.size != options.size -> 0.42
+            optionLabels.distinct().size != optionLabels.size -> 0.35
+            options.any { option -> option.normalizedText.isBlank() } -> 0.5
+            else -> 0.94
+        }
+        val inputOrders = inputs.mapNotNull { input -> input.order }
+        val inputsScore = when {
+            inputs.isEmpty() -> 0.62
+            blanks.isNotEmpty() && blanks.size != inputs.size -> 0.45
+            inputOrders.size != inputs.size || inputOrders.distinct().size != inputOrders.size -> 0.5
+            inputOrders.any { order -> order <= 0 } -> 0.55
+            else -> 0.92
+        }
+        val actionsScore = when {
+            actions.any { action -> action.kind == "next" } -> 0.92
+            actions.any { action -> action.kind == "submit" } -> 0.82
+            actions.isNotEmpty() -> 0.65
+            else -> 0.5
+        }
+        return linkedMapOf(
+            "overall" to structureConfidence.coerceIn(0.0, 1.0),
+            "question" to questionScore,
+            "options" to optionsScore,
+            "inputs" to inputsScore,
+            "actions" to actionsScore,
+        )
     }
 
     private fun resolveInputFields(elements: List<UiElement>): List<InputFieldRef> {
-        val inputNodes = sortElementsByVisualOrder(elements.filter { element -> element.editable })
+        val inputNodes = sortElementsByVisualOrder(
+            elements.filter { element -> element.visibleToUser && element.editable },
+        )
         if (inputNodes.isEmpty()) {
             return emptyList()
         }
-        val blankLabels = resolveBlankLabels(elements)
+        val blankLabels = resolveBlankLabels(elements.filter { element -> element.visibleToUser })
         val labelAssignments = assignBlankLabelsToInputs(inputNodes, blankLabels)
         val orderedInputs = inputNodes
             .mapIndexed { index, element ->
@@ -402,7 +509,11 @@ object QuestionExtractor {
                 val resolvedOrder = assignedLabel?.index ?: defaultOrder
                 val rawText = cleanText(element.text)
                 val rawDesc = cleanText(element.desc)
-                val explicitHint = assignedLabel?.hint ?: sanitizeBlankHint(rawDesc.ifBlank { rawText }, resolvedOrder)
+                val rawHint = cleanText(element.hintText)
+                val explicitHint = assignedLabel?.hint ?: sanitizeBlankHint(
+                    rawHint.ifBlank { rawDesc.ifBlank { rawText } },
+                    resolvedOrder,
+                )
                 InputFieldRef(
                     id = element.id,
                     text = rawText.ifBlank { null },
@@ -811,11 +922,14 @@ object QuestionExtractor {
             return fromRegion
         }
 
-        val screenHeight = snapshot.elements.maxOfOrNull { element ->
-            element.bounds.getOrNull(3) ?: 0
-        } ?: 0
-        val titleLimit = (screenHeight * 0.2).toInt()
-        val footerStart = (screenHeight * 0.74).toInt()
+        val screenBounds = resolveScreenBounds(snapshot)
+        val screenHeight = (screenBounds.getOrNull(3) ?: 0) - (screenBounds.getOrNull(1) ?: 0)
+        if (screenHeight <= 0) {
+            return emptyList()
+        }
+        val screenTop = screenBounds.getOrNull(1) ?: 0
+        val titleLimit = screenTop + (screenHeight * 0.2).toInt()
+        val footerStart = screenTop + (screenHeight * 0.74).toInt()
         return snapshot.elements.filter { element ->
             if (element.id in footerRegionIds || element.id in popupRegionIds) {
                 return@filter false
@@ -858,6 +972,8 @@ object QuestionExtractor {
         val rows = mutableListOf<List<UiElement>>()
         var currentRow = mutableListOf<UiElement>()
         var currentCenterY = Int.MIN_VALUE
+        var currentTop = 0
+        var currentBottom = 0
         sorted.forEach { element ->
             val top = element.bounds.getOrNull(1) ?: return@forEach
             val bottom = element.bounds.getOrNull(3) ?: return@forEach
@@ -865,16 +981,27 @@ object QuestionExtractor {
             if (currentRow.isEmpty()) {
                 currentRow = mutableListOf(element)
                 currentCenterY = centerY
+                currentTop = top
+                currentBottom = bottom
                 return@forEach
             }
-            if (kotlin.math.abs(centerY - currentCenterY) <= 28) {
+            val overlap = minOf(bottom, currentBottom) - maxOf(top, currentTop)
+            val rowHeight = (currentBottom - currentTop).coerceAtLeast(1)
+            val elementHeight = (bottom - top).coerceAtLeast(1)
+            val minHeight = minOf(rowHeight, elementHeight)
+            val centerTolerance = maxOf(28, (minHeight * 0.45).toInt())
+            if (overlap >= minHeight / 3 || kotlin.math.abs(centerY - currentCenterY) <= centerTolerance) {
                 currentRow += element
                 val size = currentRow.size
                 currentCenterY = ((currentCenterY * (size - 1)) + centerY) / size
+                currentTop = minOf(currentTop, top)
+                currentBottom = maxOf(currentBottom, bottom)
             } else {
                 rows += currentRow
                 currentRow = mutableListOf(element)
                 currentCenterY = centerY
+                currentTop = top
+                currentBottom = bottom
             }
         }
         if (currentRow.isNotEmpty()) {
@@ -885,10 +1012,11 @@ object QuestionExtractor {
         var fallbackIndex = 0
         rows.forEach { row ->
             val sortedRow = row.sortedBy { element -> element.bounds.getOrNull(0) ?: Int.MAX_VALUE }
-            val rowTexts = sortedRow
-                .map { element -> cleanText(element.text ?: element.desc) }
-                .filter(String::isNotBlank)
-                .distinct()
+            val rowTexts = dedupeContainedTexts(
+                sortedRow
+                    .map { element -> cleanText(element.text ?: element.desc) }
+                    .filter(String::isNotBlank),
+            )
             if (rowTexts.isEmpty()) {
                 return@forEach
             }
@@ -937,7 +1065,7 @@ object QuestionExtractor {
     }
 
     private fun isOptionMarkedSelected(rowTexts: List<String>, rowElements: List<UiElement>): Boolean {
-        if (rowElements.any { element -> element.checked }) {
+        if (rowElements.any { element -> element.checked || element.selected }) {
             return true
         }
         return rowTexts.any { text ->
@@ -1038,23 +1166,71 @@ object QuestionExtractor {
     }
 
     private fun cleanText(value: String?): String {
+        if (value.isNullOrBlank()) {
+            return ""
+        }
+        // 仅解码常见实体并压缩空白，避免把题目中的 <div> 等代码片段误当成 HTML 标签删除。
         return value
-            ?.replace("\\s+".toRegex(), " ")
-            ?.trim()
-            .orEmpty()
+            .replace(invisibleCharPattern, "")
+            .replace(htmlWhitespaceEntityPattern, " ")
+            .replace(htmlAmpPattern, "&")
+            .replace(htmlLtPattern, "<")
+            .replace(htmlGtPattern, ">")
+            .replace(htmlQuotePattern, "\"")
+            .replace(htmlAposPattern, "'")
+            .replace(whitespacePattern, " ")
+            .trim()
+    }
+
+    private fun dedupeContainedTexts(values: List<String>): List<String> {
+        val output = mutableListOf<String>()
+        values
+            .sortedByDescending(String::length)
+            .forEach { candidate ->
+                val normalizedCandidate = normalizeForQuestionDedup(candidate)
+                if (normalizedCandidate.isBlank()) {
+                    return@forEach
+                }
+                val contained = output.any { existing ->
+                    val normalizedExisting = normalizeForQuestionDedup(existing)
+                    normalizedExisting.contains(normalizedCandidate) || normalizedCandidate.contains(normalizedExisting)
+                }
+                if (!contained) {
+                    output += candidate
+                }
+            }
+        return output
+    }
+
+    private fun resolveScreenBounds(snapshot: UiSnapshot): List<Int> {
+        val rawBounds = snapshot.screen["rootBounds"]
+        if (rawBounds is List<*>) {
+            val values = rawBounds.mapNotNull { value -> (value as? Number)?.toInt() }
+            if (values.size >= 4) {
+                return values
+            }
+        }
+        val right = snapshot.elements.maxOfOrNull { element -> element.bounds.getOrNull(2) ?: 0 } ?: 0
+        val bottom = snapshot.elements.maxOfOrNull { element -> element.bounds.getOrNull(3) ?: 0 } ?: 0
+        return listOf(0, 0, right, bottom)
     }
 
     private fun buildFingerprint(
         normalizedQuestion: String,
         options: List<QuestionOption>,
         blanks: List<QuestionBlank>,
-        inputCount: Int,
+        inputs: List<InputFieldRef>,
     ): String {
         val optionsPart = options
             .map { option -> "${option.label}:${option.normalizedText}" }
             .sorted()
             .joinToString("|")
-        val structurePart = "${blanks.size}#$inputCount"
+        // 只使用稳定顺序，避免用户输入后的回读文本或动态占位符改变题目指纹。
+        val inputsPart = inputs
+            .mapNotNull { input -> input.order }
+            .sorted()
+            .joinToString("|")
+        val structurePart = "${blanks.size}#${inputs.size}#$inputsPart"
         val raw = "$normalizedQuestion#$optionsPart#$structurePart"
         val hash = raw.hashCode().toLong() and 0xffffffffL
         return "qf_${hash.toString(16)}"
@@ -1214,12 +1390,9 @@ object QuestionExtractor {
         val hintCenterY = (hintTop + hintBottom) / 2
         val hintArea = (hintRight - hintLeft).coerceAtLeast(0) * (hintBottom - hintTop).coerceAtLeast(0)
 
-        val screenWidth = snapshot.elements.maxOfOrNull { element ->
-            element.bounds.getOrNull(2) ?: 0
-        } ?: 0
-        val screenHeight = snapshot.elements.maxOfOrNull { element ->
-            element.bounds.getOrNull(3) ?: 0
-        } ?: 0
+        val screenBounds = resolveScreenBounds(snapshot)
+        val screenWidth = (screenBounds.getOrNull(2) ?: 0) - (screenBounds.getOrNull(0) ?: 0)
+        val screenHeight = (screenBounds.getOrNull(3) ?: 0) - (screenBounds.getOrNull(1) ?: 0)
         val screenArea = screenWidth * screenHeight
 
         val candidates = snapshot.elements.filter { element ->
@@ -1439,13 +1612,14 @@ object QuestionExtractor {
         }
         val top = hintElement.bounds.getOrNull(1) ?: return null
         val bottom = hintElement.bounds.getOrNull(3) ?: return null
-        val screenHeight = snapshot.elements.maxOfOrNull { element ->
-            element.bounds.getOrNull(3) ?: 0
-        } ?: return null
+        val screenBounds = resolveScreenBounds(snapshot)
+        val screenTop = screenBounds.getOrNull(1) ?: 0
+        val screenHeight = (screenBounds.getOrNull(3) ?: 0) - screenTop
         if (screenHeight <= 0) {
             return null
         }
-        val isFooterLike = top >= (screenHeight * 0.55).toInt() || bottom >= (screenHeight * 0.6).toInt()
+        val isFooterLike = top >= screenTop + (screenHeight * 0.55).toInt() ||
+            bottom >= screenTop + (screenHeight * 0.6).toInt()
         val isPopupLike = kind == "confirm" || kind == "cancel"
         val hintText = cleanText(hintElement.text ?: hintElement.desc)
         val isResumeEntryAction = kind == "next" && resumeEntryActionKeywords.any { keyword ->

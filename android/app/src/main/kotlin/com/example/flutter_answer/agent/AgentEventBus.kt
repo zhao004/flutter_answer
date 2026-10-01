@@ -6,7 +6,8 @@ import io.flutter.plugin.common.EventChannel
 
 object AgentEventBus : EventChannel.StreamHandler {
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    // 使用惰性初始化，避免 JVM 单元测试在没有 Android Looper 时加载事件总线失败。
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val backlog = ArrayDeque<Map<String, Any?>>()
     private val listeners = linkedMapOf<String, EventChannel.EventSink>()
 
@@ -79,9 +80,11 @@ object AgentEventBus : EventChannel.StreamHandler {
             return
         }
 
-        mainHandler.post {
-            listeners.values.forEach { sink ->
-                sink.success(event)
+        runCatching {
+            mainHandler.post {
+                listeners.values.toList().forEach { sink ->
+                    runCatching { sink.success(event) }
+                }
             }
         }
     }

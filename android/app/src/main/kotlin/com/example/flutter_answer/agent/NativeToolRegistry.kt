@@ -68,6 +68,23 @@ object NativeToolRegistry {
         },
         object : NativeTool {
             override val definition = NativeToolDefinition(
+                name = "reset_answer_cache",
+                description = "Clear the in-memory exact question answer cache before starting a new Agent run.",
+                inputSchema = emptySchema(),
+                idempotent = true,
+                category = "diagnostic",
+            )
+
+            override fun execute(arguments: Map<String, Any?>): Map<String, Any?> {
+                QuestionFingerprintCache.clear()
+                return mapOf(
+                    "ok" to true,
+                    "message" to "会话答案缓存已清空。",
+                )
+            }
+        },
+        object : NativeTool {
+            override val definition = NativeToolDefinition(
                 name = "get_ui_snapshot",
                 description = "Capture the current UI hierarchy with element ids, bounds, and capabilities.",
                 inputSchema = emptySchema(),
@@ -146,6 +163,71 @@ object NativeToolRegistry {
                     arguments.string("elementId"),
                     arguments.string("text"),
                 )
+            }
+        },
+        object : NativeTool {
+            override val definition = NativeToolDefinition(
+                name = "apply_answer_plan",
+                description = "Apply a validated structured answer plan, verify all fields, and optionally advance to the next question. Never clicks submit or confirm actions.",
+                inputSchema = objectSchema(
+                    properties = mapOf(
+                        "fingerprint" to stringSchema(
+                            description = "The question fingerprint returned by get_question_context.",
+                        ),
+                        "selectedOptionLabels" to arraySchema(
+                            description = "Complete set of option labels that should be selected.",
+                            items = stringSchema("A stable option label such as A, B, or 1."),
+                        ),
+                        "blankAnswers" to arraySchema(
+                            description = "Answers for all fill-in-the-blank inputs.",
+                            items = objectSchema(
+                                properties = mapOf(
+                                    "order" to integerSchema(
+                                        description = "One-based blank order from the question context.",
+                                        minimum = 1,
+                                        maximum = 100,
+                                    ),
+                                    "text" to stringSchema("The answer text for this blank."),
+                                ),
+                                required = listOf("order", "text"),
+                            ),
+                        ),
+                        "confidence" to numberSchema(
+                            description = "Model confidence for the answer plan.",
+                            minimum = 0.0,
+                            maximum = 1.0,
+                        ),
+                        "advance" to booleanSchema(
+                            description = "Whether to click the next-question action after verification.",
+                        ),
+                    ),
+                    required = listOf("fingerprint", "selectedOptionLabels", "blankAnswers", "advance"),
+                ),
+                atomic = false,
+                category = "action",
+            )
+
+            override fun execute(arguments: Map<String, Any?>): Map<String, Any?> {
+                return AccessibilityAgent.applyAnswerPlan(
+                    fingerprint = arguments.string("fingerprint"),
+                    selectedOptionLabels = arguments.stringList("selectedOptionLabels"),
+                    blankAnswers = arguments.blankAnswerList("blankAnswers"),
+                    confidence = arguments.double("confidence"),
+                    advance = arguments.boolean("advance"),
+                )
+            }
+        },
+        object : NativeTool {
+            override val definition = NativeToolDefinition(
+                name = "capture_question_image",
+                description = "Capture and crop the current question area as a base64 JPEG for multimodal reasoning. Use only when structured context reports needsVisual=true.",
+                inputSchema = emptySchema(),
+                idempotent = true,
+                category = "inspection",
+            )
+
+            override fun execute(arguments: Map<String, Any?>): Map<String, Any?> {
+                return AccessibilityAgent.captureQuestionImage()
             }
         },
         object : NativeTool {
@@ -301,6 +383,30 @@ object NativeToolRegistry {
         )
     }
 
+    private fun arraySchema(
+        description: String,
+        items: Map<String, Any?>,
+    ): Map<String, Any?> {
+        return linkedMapOf(
+            "type" to "array",
+            "description" to description,
+            "items" to items,
+        )
+    }
+
+    private fun numberSchema(
+        description: String,
+        minimum: Double,
+        maximum: Double,
+    ): Map<String, Any?> {
+        return linkedMapOf(
+            "type" to "number",
+            "description" to description,
+            "minimum" to minimum,
+            "maximum" to maximum,
+        )
+    }
+
     private fun booleanSchema(description: String): Map<String, Any?> {
         return linkedMapOf(
             "type" to "boolean",
@@ -342,6 +448,33 @@ object NativeToolRegistry {
             is Int -> value
             is Number -> value.toInt()
             else -> value?.toString()?.toIntOrNull()
+        }
+    }
+
+    private fun Map<String, Any?>.stringList(key: String): List<String>? {
+        val value = this[key] as? List<*> ?: return null
+        return value.mapNotNull { item -> item?.toString() }
+    }
+
+    private fun Map<String, Any?>.blankAnswerList(key: String): List<BlankAnswer>? {
+        val value = this[key] as? List<*> ?: return null
+        val result = mutableListOf<BlankAnswer>()
+        value.forEach { item ->
+            val map = item as? Map<*, *> ?: return null
+            val order = (map["order"] as? Number)?.toInt()
+                ?: map["order"]?.toString()?.toIntOrNull()
+                ?: return null
+            val text = map["text"]?.toString() ?: return null
+            result += BlankAnswer(order = order, text = text)
+        }
+        return result
+    }
+
+    private fun Map<String, Any?>.double(key: String): Double? {
+        val value = this[key]
+        return when (value) {
+            is Number -> value.toDouble()
+            else -> value?.toString()?.toDoubleOrNull()
         }
     }
 

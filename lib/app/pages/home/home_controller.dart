@@ -12,7 +12,7 @@ import '../../agent/domain/models/agent_run_state.dart';
 import '../../agent/domain/models/native_platform_event.dart';
 import '../../agent/domain/models/native_tool_execution.dart';
 import '../../agent/domain/models/service_status_snapshot.dart';
-import '../../agent/domain/services/langchain_agent_runtime_service.dart';
+import '../../agent/domain/services/agent_runtime_service.dart';
 import '../../models/overlay_platform_event.dart';
 import '../../models/overlay_state_snapshot.dart';
 import '../../models/overlay_window_position.dart';
@@ -36,7 +36,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     required AgentPlatformGateway platformGateway,
     required OverlayPlatformGateway overlayPlatformGateway,
     required AgentConfigStore configStore,
-    required LangChainAgentRuntimeService runtimeService,
+    required AgentRuntimeService runtimeService,
   }) : _platformGateway = platformGateway,
        _overlayPlatformGateway = overlayPlatformGateway,
        _configStore = configStore,
@@ -45,7 +45,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
   final AgentPlatformGateway _platformGateway;
   final OverlayPlatformGateway _overlayPlatformGateway;
   final AgentConfigStore _configStore;
-  final LangChainAgentRuntimeService _runtimeService;
+  final AgentRuntimeService _runtimeService;
 
   final serviceStatus = const ServiceStatusSnapshot().obs;
   final currentConfig = const AgentConfig().obs;

@@ -3,7 +3,7 @@ import 'package:get/get.dart';
 import '../../agent/data/agent_config_store.dart';
 import '../../agent/data/agent_platform_gateway.dart';
 import '../../agent/data/method_channel_agent_platform_gateway.dart';
-import '../../agent/domain/services/langchain_agent_runtime_service.dart';
+import '../../agent/domain/services/question_solver_runtime_service.dart';
 import '../../services/method_channel_overlay_platform_gateway.dart';
 import '../../services/overlay_platform_gateway.dart';
 import 'home_controller.dart';
@@ -20,8 +20,8 @@ class HomeBinding extends Bindings {
       fenix: true,
     );
     Get.lazyPut<AgentConfigStore>(() => AgentConfigStore.instance, fenix: true);
-    Get.lazyPut<LangChainAgentRuntimeService>(
-      () => LangChainAgentRuntimeService(
+    Get.lazyPut<QuestionSolverRuntimeService>(
+      () => QuestionSolverRuntimeService(
         platformGateway: Get.find<AgentPlatformGateway>(),
       ),
       fenix: true,
@@ -31,7 +31,7 @@ class HomeBinding extends Bindings {
         platformGateway: Get.find<AgentPlatformGateway>(),
         overlayPlatformGateway: Get.find<OverlayPlatformGateway>(),
         configStore: Get.find<AgentConfigStore>(),
-        runtimeService: Get.find<LangChainAgentRuntimeService>(),
+        runtimeService: Get.find<QuestionSolverRuntimeService>(),
       ),
     );
   }
