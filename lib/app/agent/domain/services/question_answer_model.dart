@@ -119,6 +119,7 @@ class ChatOpenAiQuestionAnswerModel implements QuestionAnswerModel {
       ..writeln('选择题使用页面中稳定存在的选项标签；填空题使用 inputFields 的 order，从 1 开始。')
       ..writeln('selected_option_labels 表示题目最终应处于选中状态的完整标签集合。')
       ..writeln('blank_answers 必须覆盖所有输入框且每题号只出现一次。')
+      ..writeln('当选项 contentMissing=true 时，选项正文只存在于截图中，必须结合截图判断每个标签的含义。')
       ..writeln('如果截图与结构化文本冲突、题目缺失或答案不确定，设置 needs_manual_review=true。')
       ..writeln('confidence 必须为 0 到 1 之间的小数。');
     if (jsonObjectFallback) {

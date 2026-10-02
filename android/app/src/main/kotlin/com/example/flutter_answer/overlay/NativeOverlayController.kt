@@ -7,6 +7,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -92,6 +93,23 @@ object NativeOverlayController {
     }
 
     fun isActive(): Boolean = isActive
+
+    /**
+     * 返回悬浮窗当前占用的屏幕触摸区域，供自动化点击避让。
+     *
+     * 悬浮窗是本应用的 APPLICATION_OVERLAY 窗口，落在其范围内的触摸会被它拦截；
+     * 自动化手势必须避开这块区域，否则会出现“点了没反应”。未显示时返回 null。
+     * 位置字段可能正被主线程拖动更新，这里允许轻微竞态，避免拖动期间的高频同步。
+     */
+    fun currentTouchBoundsPx(): Rect? {
+        if (!isActive) {
+            return null
+        }
+        val size = sizeForMode(currentMode)
+        val left = positionXPx.roundToInt()
+        val top = positionYPx.roundToInt()
+        return Rect(left, top, left + size.width, top + size.height)
+    }
 
     fun snapshot(): Map<String, Any?> {
         val size = sizeForMode(currentMode)

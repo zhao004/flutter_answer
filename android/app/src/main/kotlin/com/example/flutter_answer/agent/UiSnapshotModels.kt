@@ -83,6 +83,13 @@ data class QuestionOption(
     val text: String,
     val checked: Boolean,
     val normalizedText: String = text,
+    /**
+     * 页面是否只暴露了选项标签而没有暴露选项正文。
+     *
+     * 部分 WebView 题型只把 A/B/C/D 标签放进无障碍树，正文仅存在于视觉层；
+     * 此时必须依赖截图补齐，不能把标签当作选项内容参与理解。
+     */
+    val contentMissing: Boolean = false,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "id" to id,
@@ -90,6 +97,7 @@ data class QuestionOption(
         "text" to text,
         "checked" to checked,
         "normalizedText" to normalizedText,
+        "contentMissing" to contentMissing,
     )
 }
 

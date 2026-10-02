@@ -467,6 +467,9 @@ object QuestionExtractor {
             options.size < 2 -> 0.45
             optionLabels.size != options.size -> 0.42
             optionLabels.distinct().size != optionLabels.size -> 0.35
+            // 正文完全缺失时纯文本链路无法判断选项含义，必须走截图补充。
+            options.all { option -> option.contentMissing } -> 0.3
+            options.any { option -> option.contentMissing } -> 0.5
             options.any { option -> option.normalizedText.isBlank() } -> 0.5
             else -> 0.94
         }
@@ -1022,7 +1025,9 @@ object QuestionExtractor {
             }
 
             val mergedText = rowTexts.joinToString(" ")
-            if (isActionLikeText(mergedText) || isNoiseQuestionText(mergedText)) {
+            // 裸标签（A/B/C/D）行长度只有 1，会被通用噪声规则误杀；
+            // 这类行来自选项区域，必须保留用于后续截图补齐正文。
+            if (isActionLikeText(mergedText) || (isNoiseQuestionText(mergedText) && !isBareOptionLabelText(mergedText))) {
                 return@forEach
             }
             if (strictQuestionIndexPattern.containsMatchIn(mergedText)) {
@@ -1053,15 +1058,39 @@ object QuestionExtractor {
                 ?: sortedRow.firstOrNull { element -> element.clickable }
                 ?: sortedRow.firstOrNull { element -> cleanText(element.text ?: element.desc).isNotBlank() }
                 ?: sortedRow.first()
+            // 部分 WebView 题型只把标签放进无障碍树，正文仅存在于视觉层；
+            // 这里显式标记，供置信度评估与模型提示判断是否需要截图补齐。
+            val contentMissing = normalizeForMatching(optionText) == normalizeForMatching(label)
             output += QuestionOption(
                 id = anchor.id,
                 label = label,
                 text = optionText,
                 checked = isOptionMarkedSelected(rowTexts, sortedRow),
                 normalizedText = normalizeForMatching(optionText),
+                contentMissing = contentMissing,
             )
         }
         return output
+    }
+
+    /**
+     * 判断当前页面是否暴露了任何可观测的选项选中态。
+     *
+     * WebView 题型可能既没有 checkable/checked，也不会拼接“已选择”后缀；
+     * 此时点击结果无法通过回读证实，调用方需要按弱证据处理。
+     */
+    fun hasObservableOptionSelection(options: List<QuestionOption>): Boolean {
+        return options.any { option ->
+            option.checked || optionSelectedKeywords.any { keyword -> option.text.contains(keyword) }
+        }
+    }
+
+    /**
+     * 是否为只包含单个选项标签字母（A-H）的行。
+     */
+    private fun isBareOptionLabelText(text: String): Boolean {
+        val normalized = cleanText(text)
+        return normalized.length == 1 && normalized.uppercase()[0] in 'A'..'H'
     }
 
     private fun isOptionMarkedSelected(rowTexts: List<String>, rowElements: List<UiElement>): Boolean {

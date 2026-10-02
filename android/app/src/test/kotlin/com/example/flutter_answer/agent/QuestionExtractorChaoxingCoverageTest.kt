@@ -21,6 +21,38 @@ class QuestionExtractorChaoxingCoverageTest {
     }
 
     @Test
+    fun `extract label-only webview options marks content missing and requires visual fallback`() {
+        val context = QuestionExtractor.extract(labelOnlyOptionSnapshot())
+
+        // 题干经过标点统一（。→ .）与空白压缩，这里按归一化后的完整文本校验。
+        assertEquals(
+            "计算机网络是由多台独立的计算机通过通信线路和通信设备连接而成的.( )",
+            context.question,
+        )
+        assertFalse(context.question.contains("A"))
+        assertEquals(listOf("A", "B"), context.options.map(QuestionOption::label))
+        assertTrue(context.options.all { option -> option.contentMissing })
+        assertEquals(
+            listOf("optionAContainer", "optionBContainer"),
+            context.options.map(QuestionOption::id),
+        )
+        assertTrue((context.fieldConfidence["options"] ?: 1.0) < 0.6)
+        assertTrue(context.needsVisual)
+    }
+
+    @Test
+    fun `extract selected suffix keeps option content and counts as observable state`() {
+        val context = QuestionExtractor.extract(selectedSuffixOptionSnapshot())
+
+        assertEquals(listOf("A", "B"), context.options.map(QuestionOption::label))
+        assertEquals(listOf("对", "错"), context.options.map(QuestionOption::text))
+        assertTrue(context.options.first { option -> option.label == "A" }.checked)
+        assertTrue(QuestionExtractor.hasObservableOptionSelection(context.options))
+        assertFalse(context.options.any { option -> option.contentMissing })
+        assertFalse(context.needsVisual)
+    }
+
+    @Test
     fun `extract fill blank page keeps prompt clean and infers blank hint from label`() {
         val context = QuestionExtractor.extract(fillBlankSnapshot())
 
@@ -179,6 +211,124 @@ class QuestionExtractorChaoxingCoverageTest {
         assertEquals(1.0, context.structureSignals["unansweredWarningSignal"])
         assertEquals(0.0, context.structureSignals["submitDialogSignal"])
         assertFalse(context.needConfirm)
+    }
+
+    /**
+     * 与真机（2026-10，学习通 WebView）一致的裸标签题型：
+     * 题干可读，选项只暴露 A/B 标签，“对/错”正文仅存在于视觉层，
+     * 可点击的整行容器是标签的父节点。
+     */
+    private fun labelOnlyOptionSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "questionText",
+                    text = "计算机网络是由多台独立的计算机通过通信线路和通信设备连接而成的。(        )",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 545, 1361, 721),
+                ),
+                element(
+                    id = "optionAContainer",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(56, 826, 1383, 965),
+                ),
+                element(
+                    id = "optionALabel",
+                    text = "A",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 830, 191, 965),
+                    parentId = "optionAContainer",
+                ),
+                element(
+                    id = "optionBContainer",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(56, 1055, 1383, 1193),
+                ),
+                element(
+                    id = "optionBLabel",
+                    text = "B",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 1058, 191, 1193),
+                    parentId = "optionBContainer",
+                ),
+                element(
+                    id = "prevQuestion",
+                    text = " 上一题",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(112, 1343, 521, 1538),
+                ),
+                element(
+                    id = "answerCard",
+                    text = "答题卡 ",
+                    className = "android.widget.TextView",
+                    bounds = listOf(641, 1445, 798, 1508),
+                ),
+                element(
+                    id = "nextQuestion",
+                    text = "下一题 ",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(918, 1343, 1327, 1538),
+                ),
+            ),
+        )
+    }
+
+    /**
+     * 旧版学习通题型：选项正文直接进入无障碍树，选中态以“已选择”后缀表达。
+     */
+    private fun selectedSuffixOptionSnapshot(): UiSnapshot {
+        return chaoxingSnapshot(
+            listOf(
+                element(
+                    id = "questionType",
+                    text = "5. 判断题",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 280, 1383, 512),
+                ),
+                element(
+                    id = "questionText",
+                    text = "计算机网络是由多台独立的计算机通过通信线路和通信设备连接而成的。",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 538, 885, 617),
+                ),
+                element(
+                    id = "optionAText",
+                    text = "A.对已选择",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 745, 191, 880),
+                ),
+                element(
+                    id = "optionBText",
+                    text = "B.错",
+                    className = "android.widget.TextView",
+                    bounds = listOf(56, 973, 191, 1108),
+                ),
+                element(
+                    id = "prevQuestion",
+                    text = " 上一题",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(112, 1258, 521, 1457),
+                ),
+                element(
+                    id = "answerCard",
+                    text = "答题卡 共5题 第5题",
+                    className = "android.view.View",
+                    bounds = listOf(517, 1258, 922, 1457),
+                ),
+                element(
+                    id = "nextQuestion",
+                    text = "下一题",
+                    className = "android.view.View",
+                    clickable = true,
+                    bounds = listOf(918, 1258, 1327, 1457),
+                ),
+            ),
+        )
     }
 
     private fun multiSelectSnapshot(): UiSnapshot {
@@ -999,6 +1149,7 @@ class QuestionExtractorChaoxingCoverageTest {
         clickable: Boolean = false,
         checkable: Boolean = false,
         checked: Boolean = false,
+        parentId: String? = null,
         bounds: List<Int>,
     ): UiElement {
         return UiElement(
@@ -1016,6 +1167,7 @@ class QuestionExtractorChaoxingCoverageTest {
             scrollable = false,
             bounds = bounds,
             depth = 0,
+            parentId = parentId,
         )
     }
 }

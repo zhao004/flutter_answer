@@ -396,14 +396,23 @@ object AccessibilityAgent {
         } else {
             context
         }
-        val verificationError = verifyAppliedPlan(
+        val verification = verifyAppliedPlan(
             context = refreshedContext,
             desiredLabels = desiredLabels,
             answerByOrder = answerByOrder,
         )
-        if (verificationError != null) {
+        if (verification.error != null) {
             QuestionFingerprintCache.invalidate(safeFingerprint)
-            return reportFailure("applyAnswerPlan", verificationError, "answer_verification_failed")
+            return reportFailure("applyAnswerPlan", verification.error, "answer_verification_failed")
+        }
+        // WebView 题型可能完全不暴露选中态，此时只能记录弱证据并继续推进。
+        val weakVerification = verification.weakOptionLabels.isNotEmpty()
+        if (weakVerification) {
+            AgentEventBus.log(
+                "warn",
+                "选项 ${verification.weakOptionLabels.joinToString()} 的选中态无法从页面回读，" +
+                    "已按点击送达继续执行，请留意后续题目状态。",
+            )
         }
 
         val plan = AnswerPlan(
@@ -433,6 +442,8 @@ object AccessibilityAgent {
                     "manualReviewRequired" to true,
                     "finalPageStage" to finalPageStage,
                     "appliedActionCount" to appliedActionCount,
+                    "weakVerification" to weakVerification,
+                    "weakOptionLabels" to verification.weakOptionLabels,
                 ),
             )
             AgentEventBus.log("warn", payload["message"].toString())
@@ -449,6 +460,8 @@ object AccessibilityAgent {
                     "manualReviewRequired" to false,
                     "finalPageStage" to finalPageStage,
                     "appliedActionCount" to appliedActionCount,
+                    "weakVerification" to weakVerification,
+                    "weakOptionLabels" to verification.weakOptionLabels,
                 ),
             )
             AgentEventBus.toolResult("applyAnswerPlan", true, payload)
@@ -465,6 +478,8 @@ object AccessibilityAgent {
                     "manualReviewRequired" to true,
                     "finalPageStage" to finalPageStage,
                     "appliedActionCount" to appliedActionCount,
+                    "weakVerification" to weakVerification,
+                    "weakOptionLabels" to verification.weakOptionLabels,
                 ),
             )
             AgentEventBus.log("warn", payload["message"].toString())
@@ -496,6 +511,8 @@ object AccessibilityAgent {
                 "nextActionId" to nextAction.id,
                 "finalPageStage" to finalPageStage,
                 "appliedActionCount" to appliedActionCount,
+                "weakVerification" to weakVerification,
+                "weakOptionLabels" to verification.weakOptionLabels,
             ),
         )
         AgentEventBus.toolResult("applyAnswerPlan", true, payload)
@@ -2011,27 +2028,45 @@ object AccessibilityAgent {
         return currentText.isNotBlank() && isInputTextMatched(currentText, desiredText)
     }
 
+    /**
+     * 校验答案计划是否真正落到页面上。
+     *
+     * WebView 题型可能完全不暴露选项选中态（无 checkable/checked，也没有“已选择”文本后缀），
+     * 这种页面无法强校验；此时返回弱证据标签，由调用方记录告警后继续执行。
+     */
     private fun verifyAppliedPlan(
         context: QuestionContext,
         desiredLabels: List<String>,
         answerByOrder: Map<Int, BlankAnswer>,
-    ): String? {
+    ): PlanVerificationOutcome {
         val optionByLabel = context.options.associateBy { option -> normalizePlanLabel(option.label) }
+        val unverifiedLabels = mutableListOf<String>()
         desiredLabels.forEach { label ->
-            val option = optionByLabel[label] ?: return "选项 $label 在校验阶段不存在。"
+            val option = optionByLabel[label] ?: return PlanVerificationOutcome("选项 $label 在校验阶段不存在。")
             if (!option.checked) {
-                return "选项 $label 未进入目标选中状态。"
+                unverifiedLabels += label
             }
         }
         answerByOrder.forEach { (order, answer) ->
             val input = context.inputFields.firstOrNull { field -> field.order == order }
-                ?: return "第 $order 空在校验阶段不存在。"
+                ?: return PlanVerificationOutcome("第 $order 空在校验阶段不存在。")
             if (!isInputPlanAlreadySatisfied(input, answer.text)) {
-                return "第 $order 空回读内容与目标答案不一致。"
+                return PlanVerificationOutcome("第 $order 空回读内容与目标答案不一致。")
             }
         }
-        return null
+        if (unverifiedLabels.isEmpty()) {
+            return PlanVerificationOutcome(error = null)
+        }
+        if (QuestionExtractor.hasObservableOptionSelection(context.options)) {
+            return PlanVerificationOutcome("选项 ${unverifiedLabels.joinToString()} 未进入目标选中状态。")
+        }
+        return PlanVerificationOutcome(error = null, weakOptionLabels = unverifiedLabels)
     }
+
+    private data class PlanVerificationOutcome(
+        val error: String?,
+        val weakOptionLabels: List<String> = emptyList(),
+    )
 
     private fun failureWithDetails(
         message: String,

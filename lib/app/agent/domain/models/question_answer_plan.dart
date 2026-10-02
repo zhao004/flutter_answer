@@ -90,6 +90,7 @@ class QuestionOptionSnapshot {
     required this.text,
     required this.checked,
     required this.normalizedText,
+    this.contentMissing = false,
   });
 
   final String id;
@@ -98,6 +99,9 @@ class QuestionOptionSnapshot {
   final bool checked;
   final String normalizedText;
 
+  /// 页面是否只暴露了选项标签而没有暴露选项正文（正文仅存在于截图里）。
+  final bool contentMissing;
+
   factory QuestionOptionSnapshot.fromMap(Map<String, dynamic> map) {
     return QuestionOptionSnapshot(
       id: map['id']?.toString() ?? '',
@@ -105,6 +109,7 @@ class QuestionOptionSnapshot {
       text: map['text']?.toString().trim() ?? '',
       checked: map['checked'] == true,
       normalizedText: map['normalizedText']?.toString().trim() ?? '',
+      contentMissing: map['contentMissing'] == true,
     );
   }
 
@@ -113,6 +118,7 @@ class QuestionOptionSnapshot {
     'label': label,
     'text': text,
     'checked': checked,
+    'contentMissing': contentMissing,
   };
 }
 

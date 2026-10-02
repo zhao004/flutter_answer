@@ -3,11 +3,13 @@ package com.example.flutter_answer.agent
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
 import android.os.Looper
 import android.view.accessibility.AccessibilityNodeInfo
 import cn.vove7.auto.core.AutoApi
 import cn.vove7.auto.core.api.click as autoClick
+import com.example.flutter_answer.overlay.NativeOverlayController
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CountDownLatch
@@ -99,7 +101,44 @@ internal object AccessibilityAutomationDriver {
             return false
         }
         val rect = Rect().also(node::getBoundsInScreen)
-        return tapPoint(rect.exactCenterX(), rect.exactCenterY(), rootBoundsProvider)
+        val point = resolveSafeTapPoint(rect, NativeOverlayController.currentTouchBoundsPx())
+        return tapPoint(point.x, point.y, rootBoundsProvider)
+    }
+
+    /**
+     * 选择节点内的安全点击点。
+     *
+     * 本应用自身的悬浮窗（AI 悬浮球/面板）会拦截落在其范围内的触摸，
+     * 因此当节点中心被遮挡时，依次尝试节点内其他比例的落点；
+     * 全部被遮挡时退回中心点，由上层点击回读校验兜底。
+     */
+    private fun resolveSafeTapPoint(rect: Rect, blockedBounds: Rect?): PointF {
+        val center = PointF(rect.exactCenterX(), rect.exactCenterY())
+        if (blockedBounds == null || !containsPoint(blockedBounds, center)) {
+            return center
+        }
+        val candidates = listOf(
+            0.7f to 0.5f,
+            0.5f to 0.2f,
+            0.9f to 0.5f,
+            0.5f to 0.8f,
+            0.25f to 0.2f,
+        )
+        candidates.forEach { (ratioX, ratioY) ->
+            val candidate = PointF(
+                rect.left + rect.width() * ratioX,
+                rect.top + rect.height() * ratioY,
+            )
+            if (!containsPoint(blockedBounds, candidate)) {
+                return candidate
+            }
+        }
+        return center
+    }
+
+    private fun containsPoint(rect: Rect, point: PointF): Boolean {
+        return point.x >= rect.left && point.x <= rect.right &&
+            point.y >= rect.top && point.y <= rect.bottom
     }
 
     private fun supportsClickAction(node: AccessibilityNodeInfo): Boolean {
@@ -125,7 +164,8 @@ internal object AccessibilityAutomationDriver {
         }
         val hasTextSignal = node.text?.toString()?.trim().isNullOrBlank().not() ||
             node.contentDescription?.toString()?.trim().isNullOrBlank().not()
-        if (hasTextSignal || node.isCheckable || node.isEditable) {
+        // WebView 选项行容器常是无文本的可点击 View，ACTION_CLICK 失败后需要允许手势兜底。
+        if (hasTextSignal || node.isCheckable || node.isEditable || node.isClickable) {
             return true
         }
         val className = node.className?.toString().orEmpty()

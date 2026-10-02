@@ -12,6 +12,7 @@ object UiRegionLocator {
     private val inputPlaceholderContextKeywords = listOf("答案", "编辑", "输入", "轻点", "点击", "双击")
     private val unansweredWarningKeywords = listOf("未作答", "未答题", "漏答", "未完成", "未填写", "尚未作答", "空题")
     private val editorChromeKeywords = listOf("上传附件", "拍照按钮", "录音按钮", "add", "photo", "voice")
+    private val bareOptionLabelPattern = Regex("^[A-Ha-h]$")
 
     fun locate(snapshot: UiSnapshot): List<UiRegion> {
         if (snapshot.elements.isEmpty()) {
@@ -38,8 +39,14 @@ object UiRegionLocator {
             ?.coerceAtLeast(contentTop + 80)
             ?.coerceAtMost(rawTitleLimit)
             ?: rawTitleLimit
+        // 页脚种子必须位于内容区下半部：顶部工具栏的“返回”等动作同样匹配页脚关键词，
+        // 若不限制会把 footerStart 抬到屏幕中部，直接吞掉部分选项行。
+        val footerSeedFloor = contentTop + (contentHeight * 0.4).toInt()
         val footerSeedTop = snapshot.elements
-            .filter { element -> hasFooterSignal(element) }
+            .filter { element ->
+                val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
+                top >= footerSeedFloor && hasFooterSignal(element)
+            }
             .mapNotNull { element -> element.bounds.getOrNull(1) }
             .minOrNull()
         val footerStart = footerSeedTop
@@ -104,6 +111,33 @@ object UiRegionLocator {
             inOptionBand && classCount >= 2 && (element.clickable || classCount >= 3)
         }
 
+        // 部分 WebView 题型只暴露裸标签（A/B/C/D）而没有“选项A.”前缀或 checkable，
+        // 需要按纵向递增的字母序列补充识别，否则选项区域会整片缺失。
+        val bareLabelCandidates = snapshot.elements.filter { element ->
+            val top = element.bounds.getOrNull(1) ?: Int.MAX_VALUE
+            val bottom = element.bounds.getOrNull(3) ?: 0
+            val inMiddle = top >= titleLimit && bottom <= footerStart
+            inMiddle && bareOptionLabelPattern.matches(normalizeText(element.text))
+        }
+        val bareLabelOptionNodes = resolveBareLabelOptionNodes(bareLabelCandidates)
+        val optionNodesWithLabels = (optionNodes + bareLabelOptionNodes).distinctBy(UiElement::id)
+
+        // 选项行容器通常没有文本，但它是行内真正可点击的节点；
+        // 缺容器时点击会落在不可点击的小标签上，因此把选项节点的可点击父容器补入选项区域。
+        val elementById = snapshot.elements.associateBy(UiElement::id)
+        val optionNodeIds = optionNodesWithLabels.map(UiElement::id).toSet()
+        val optionContainerNodes = optionNodesWithLabels
+            .mapNotNull { option -> option.parentId?.let(elementById::get) }
+            .filter { parent ->
+                parent.id !in optionNodeIds &&
+                    parent.clickable &&
+                    parent.text.isNullOrBlank() &&
+                    parent.desc.isNullOrBlank() &&
+                    isPlausibleOptionContainer(parent.bounds, screenHeight)
+            }
+            .distinctBy(UiElement::id)
+        val resolvedOptionNodes = (optionNodesWithLabels + optionContainerNodes).distinctBy(UiElement::id)
+
         val rawDialogNodes = snapshot.elements.filter { element ->
             val left = element.bounds.getOrNull(0) ?: Int.MIN_VALUE
             val top = element.bounds.getOrNull(1) ?: Int.MIN_VALUE
@@ -129,7 +163,7 @@ object UiRegionLocator {
                 (element.clickable || hasReadableText(element))
         }
 
-        val optionIds = optionNodes.map(UiElement::id).toSet()
+        val optionIds = resolvedOptionNodes.map(UiElement::id).toSet()
         val inputIds = inputNodes.map(UiElement::id).toSet()
         val footerIds = footerNodes.map(UiElement::id).toSet()
         val titleIds = titleNodes.map(UiElement::id).toSet()
@@ -148,7 +182,7 @@ object UiRegionLocator {
         val regions = mutableListOf<UiRegion>()
         addRegion(regions, "header", titleNodes, 0.82)
         addRegion(regions, "question", questionNodes, if (questionNodes.isNotEmpty()) 0.82 else 0.0)
-        addRegion(regions, "options", optionNodes, if (optionNodes.isNotEmpty()) 0.9 else 0.0)
+        addRegion(regions, "options", resolvedOptionNodes, if (resolvedOptionNodes.isNotEmpty()) 0.9 else 0.0)
         addRegion(regions, "input", inputNodes, if (inputNodes.isNotEmpty()) 0.9 else 0.0)
         addRegion(regions, "footer_actions", footerNodes, if (footerNodes.isNotEmpty()) 0.84 else 0.0)
         if (dialogNodes.isNotEmpty()) {
@@ -187,6 +221,42 @@ object UiRegionLocator {
 
     private fun hasReadableText(element: UiElement): Boolean {
         return normalizeText(element.text).isNotBlank() || normalizeText(element.desc).isNotBlank()
+    }
+
+    /**
+     * 识别只暴露裸标签（A/B/C/D）的选项节点。
+     *
+     * 要求标签不少于两个、互不重复，且字母顺序与纵向位置一致，避免把孤立字母误判成选项。
+     */
+    private fun resolveBareLabelOptionNodes(candidates: List<UiElement>): List<UiElement> {
+        if (candidates.size < 2) {
+            return emptyList()
+        }
+        val sorted = candidates.sortedBy { element -> element.bounds.getOrNull(1) ?: Int.MAX_VALUE }
+        val output = mutableListOf<UiElement>()
+        var previousLetter: Char? = null
+        sorted.forEach { element ->
+            val letter = normalizeText(element.text).uppercase().singleOrNull() ?: return@forEach
+            if (letter !in 'A'..'H') {
+                return@forEach
+            }
+            val previous = previousLetter
+            if (previous == null || letter > previous) {
+                output += element
+                previousLetter = letter
+            }
+        }
+        return if (output.size >= 2) output else emptyList()
+    }
+
+    /**
+     * 选项行容器高度应与单行选项接近，避免把整页可点击容器误当选项行。
+     */
+    private fun isPlausibleOptionContainer(bounds: List<Int>, screenHeight: Int): Boolean {
+        val top = bounds.getOrNull(1) ?: return false
+        val bottom = bounds.getOrNull(3) ?: return false
+        val height = bottom - top
+        return height in 1..(screenHeight * 0.25).toInt()
     }
 
     private fun hasFooterSignal(element: UiElement): Boolean {
