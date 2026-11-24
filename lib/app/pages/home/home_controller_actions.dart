@@ -88,6 +88,59 @@ extension HomeControllerActions on HomeController {
     _applyRunState(agentRunState.value);
   }
 
+  /// 从当前表单中的提供商读取可用模型，填充模型输入框的下拉选项。
+  ///
+  /// 提供商 URL 与 API 密钥都必须填写；获取失败时保留上一批可用模型，
+  /// 用户仍可以手动输入模型名称。
+  Future<void> fetchAvailableModels() async {
+    if (modelFetchBusy.value) {
+      return;
+    }
+
+    final providerUrl = form.providerUrlController.text.trim();
+    final apiKey = form.apiKeyController.text.trim();
+    if (providerUrl.isEmpty) {
+      _appendLog('error', '请先填写提供商 URL。');
+      return;
+    }
+    if (apiKey.isEmpty) {
+      _appendLog('error', '请先填写提供商 API 密钥。');
+      return;
+    }
+
+    modelFetchBusy.value = true;
+    try {
+      final models = await _modelCatalogGateway.fetchModels(
+        providerUrl: providerUrl,
+        apiKey: apiKey,
+      );
+      modelOptions.assignAll(models);
+      if (models.isEmpty) {
+        _appendLog('warn', '提供商未返回可用模型，可以继续手动填写模型名称。');
+      } else {
+        _appendLog('info', '已获取 ${models.length} 个模型，可点击模型输入框右侧箭头选择，也可继续手动输入。');
+      }
+    } on ModelCatalogException catch (error) {
+      _appendLog('error', error.message);
+    } catch (error) {
+      _appendLog('error', '获取模型失败：$error');
+    } finally {
+      modelFetchBusy.value = false;
+    }
+  }
+
+  /// 将下拉选择的模型写回输入框，保证选择与手动输入共用同一份配置。
+  void selectModel(String model) {
+    final normalized = model.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    form.modelController.value = TextEditingValue(
+      text: normalized,
+      selection: TextSelection.collapsed(offset: normalized.length),
+    );
+  }
+
   Future<bool> saveAgentConfig({bool announce = true}) async {
     final nextConfig = form.buildConfig(baseConfig: currentConfig.value);
     if (nextConfig.providerUrl.isEmpty) {

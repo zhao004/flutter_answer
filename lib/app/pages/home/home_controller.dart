@@ -7,6 +7,7 @@ import 'package:get/get.dart';
 
 import '../../agent/data/agent_config_store.dart';
 import '../../agent/data/agent_platform_gateway.dart';
+import '../../agent/data/model_catalog_gateway.dart';
 import '../../agent/domain/models/agent_config.dart';
 import '../../agent/domain/models/agent_run_state.dart';
 import '../../agent/domain/models/native_platform_event.dart';
@@ -37,20 +38,27 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     required OverlayPlatformGateway overlayPlatformGateway,
     required AgentConfigStore configStore,
     required AgentRuntimeService runtimeService,
+    required ModelCatalogGateway modelCatalogGateway,
   }) : _platformGateway = platformGateway,
        _overlayPlatformGateway = overlayPlatformGateway,
        _configStore = configStore,
-       _runtimeService = runtimeService;
+       _runtimeService = runtimeService,
+       _modelCatalogGateway = modelCatalogGateway;
 
   final AgentPlatformGateway _platformGateway;
   final OverlayPlatformGateway _overlayPlatformGateway;
   final AgentConfigStore _configStore;
   final AgentRuntimeService _runtimeService;
+  final ModelCatalogGateway _modelCatalogGateway;
 
   final serviceStatus = const ServiceStatusSnapshot().obs;
   final currentConfig = const AgentConfig().obs;
   final agentRunState = AgentRunState.idle().obs;
   final logs = <String>[].obs;
+
+  /// 最近一次成功获取的模型列表；仅在内存中保留，用于输入框下拉选择。
+  final modelOptions = <String>[].obs;
+  final modelFetchBusy = false.obs;
   final lastPayload = '{}'.obs;
   final overlayPermissionGranted = false.obs;
   final overlayState = OverlayStateSnapshot.initial().obs;

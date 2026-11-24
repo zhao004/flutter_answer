@@ -183,6 +183,8 @@ class _AgentConfigCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Obx(() {
       final hasApiKey = controller.currentConfig.value.hasApiKey;
+      final modelOptions = controller.modelOptions;
+      final modelFetchBusy = controller.modelFetchBusy.value;
 
       return _SectionCard(
         title: 'Agent 配置',
@@ -190,6 +192,63 @@ class _AgentConfigCard extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= 720;
+
+            final providerUrlField = TextField(
+              controller: controller.providerUrlController,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '提供商 URL',
+                hintText: 'https://api.openai.com',
+              ),
+            );
+            final apiKeyField = TextField(
+              controller: controller.apiKeyController,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(
+                labelText: '提供商 API 密钥',
+                hintText: hasApiKey ? '已保存到本地，可直接覆盖' : 'sk-...',
+              ),
+            );
+            final modelField = TextField(
+              controller: controller.modelController,
+              decoration: InputDecoration(
+                labelText: '模型',
+                hintText: 'gpt-5-mini',
+                suffixIcon: modelOptions.isEmpty
+                    ? null
+                    : PopupMenuButton<String>(
+                        tooltip: '选择已获取的模型',
+                        icon: const Icon(Icons.arrow_drop_down),
+                        onSelected: controller.selectModel,
+                        itemBuilder: (context) => <PopupMenuEntry<String>>[
+                          for (final model in modelOptions)
+                            PopupMenuItem<String>(
+                              value: model,
+                              child: Text(
+                                model,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
+            );
+            final fetchModelsButton = OutlinedButton.icon(
+              onPressed: modelFetchBusy
+                  ? null
+                  : controller.fetchAvailableModels,
+              icon: modelFetchBusy
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.cloud_sync_outlined),
+              label: Text(modelFetchBusy ? '获取中…' : '获取模型'),
+            );
 
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -199,60 +258,41 @@ class _AgentConfigCard extends StatelessWidget {
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: TextField(
-                          controller: controller.providerUrlController,
-                          keyboardType: TextInputType.url,
-                          decoration: const InputDecoration(
-                            labelText: '提供商 URL',
-                            hintText: 'https://api.openai.com',
-                          ),
-                        ),
-                      ),
+                      Expanded(child: providerUrlField),
                       const SizedBox(width: 16),
-                      Expanded(
-                        child: TextField(
-                          controller: controller.modelController,
-                          decoration: const InputDecoration(
-                            labelText: '模型',
-                            hintText: 'gpt-5-mini',
-                          ),
-                        ),
-                      ),
+                      Expanded(child: apiKeyField),
                     ],
                   )
-                else
-                  Column(
-                    children: [
-                      TextField(
-                        controller: controller.providerUrlController,
-                        keyboardType: TextInputType.url,
-                        decoration: const InputDecoration(
-                          labelText: '提供商 URL',
-                          hintText: 'https://api.openai.com',
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: controller.modelController,
-                        decoration: const InputDecoration(
-                          labelText: '模型',
-                          hintText: 'gpt-5-mini',
-                        ),
-                      ),
-                    ],
-                  ),
+                else ...[
+                  providerUrlField,
+                  const SizedBox(height: 16),
+                  apiKeyField,
+                ],
                 const SizedBox(height: 16),
-                TextField(
-                  controller: controller.apiKeyController,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: InputDecoration(
-                    labelText: '提供商 API 密钥',
-                    hintText: hasApiKey ? '已保存到本地，可直接覆盖' : 'sk-...',
+                if (wide)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: modelField),
+                      const SizedBox(width: 12),
+                      SizedBox(height: 56, child: fetchModelsButton),
+                    ],
+                  )
+                else ...[
+                  modelField,
+                  const SizedBox(height: 8),
+                  SizedBox(width: double.infinity, child: fetchModelsButton),
+                ],
+                if (modelOptions.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '已获取 ${modelOptions.length} 个模型，可点击模型输入框右侧箭头选择，也可手动输入。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      height: 1.45,
+                    ),
                   ),
-                ),
+                ],
                 const SizedBox(height: 16),
                 SizedBox(
                   width: double.infinity,
