@@ -45,5 +45,10 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Android 签名文件与本地签名配置
+/android/keystore.properties
+*.jks
+*.keystore
+
 .idea
 .vscode
