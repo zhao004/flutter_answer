@@ -252,6 +252,89 @@ void main() {
       hasLength(1),
     );
   });
+
+  test('模型要求人工确认时停止消息保留模型给出的具体原因', () async {
+    final model = _FakeQuestionAnswerModel(
+      plans: <QuestionAnswerPlanDraft>[
+        const QuestionAnswerPlanDraft(
+          fingerprint: 'qf_question',
+          selectedOptionLabels: <String>[],
+          blankAnswers: <BlankAnswerPlan>[],
+          confidence: 0.42,
+          needsManualReview: true,
+          manualReviewReason: '选项正文缺失，无法判断正确选项',
+        ),
+      ],
+    );
+    final gateway = _ScriptedAgentGateway(
+      contextResults: <Map<String, dynamic>>[
+        _questionContext(
+          fingerprint: 'qf_question',
+          options: <Map<String, dynamic>>[
+            _option(id: 'option_a', label: 'A', text: '正确'),
+          ],
+        ),
+      ],
+    );
+    final runtime = QuestionSolverRuntimeService(
+      platformGateway: gateway,
+      answerModel: model,
+    );
+
+    final result = await runtime.run(
+      config: config,
+      onStatus: (_) {},
+      onLog: (String _, String message) {},
+      onToolResult: (_) {},
+    );
+
+    expect(result.status, 'stopped');
+    expect(result.message, contains('模型要求人工确认：'));
+    expect(result.message, contains('选项正文缺失，无法判断正确选项'));
+    expect(result.message, contains('选择题答案没有包含任何选项标签'));
+    expect(result.message, contains('（置信度 0.42）'));
+    expect(model.callCount, 2);
+  });
+
+  test('模型未给出人工确认原因时回退到结构校验错误', () async {
+    final model = _FakeQuestionAnswerModel(
+      plans: <QuestionAnswerPlanDraft>[
+        const QuestionAnswerPlanDraft(
+          fingerprint: 'qf_question',
+          selectedOptionLabels: <String>[],
+          blankAnswers: <BlankAnswerPlan>[],
+          confidence: 0.42,
+          needsManualReview: true,
+        ),
+      ],
+    );
+    final gateway = _ScriptedAgentGateway(
+      contextResults: <Map<String, dynamic>>[
+        _questionContext(
+          fingerprint: 'qf_question',
+          options: <Map<String, dynamic>>[
+            _option(id: 'option_a', label: 'A', text: '正确'),
+          ],
+        ),
+      ],
+    );
+    final runtime = QuestionSolverRuntimeService(
+      platformGateway: gateway,
+      answerModel: model,
+    );
+
+    final result = await runtime.run(
+      config: config,
+      onStatus: (_) {},
+      onLog: (String _, String message) {},
+      onToolResult: (_) {},
+    );
+
+    expect(result.status, 'stopped');
+    expect(result.message, contains('选择题答案没有包含任何选项标签'));
+    expect(result.message, contains('（置信度 0.42）'));
+    expect(model.callCount, 2);
+  });
 }
 
 class _FakeQuestionAnswerModel implements QuestionAnswerModel {

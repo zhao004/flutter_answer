@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+/// 人工确认原因的最大长度，避免模型异常输出撑大停止消息与日志。
+const int _manualReviewReasonMaxLength = 200;
+
 class BlankAnswerPlan {
   const BlankAnswerPlan({required this.order, required this.text});
 
@@ -26,6 +29,7 @@ class QuestionAnswerPlanDraft {
     required this.blankAnswers,
     required this.confidence,
     required this.needsManualReview,
+    this.manualReviewReason = '',
   });
 
   final String fingerprint;
@@ -33,6 +37,9 @@ class QuestionAnswerPlanDraft {
   final List<BlankAnswerPlan> blankAnswers;
   final double confidence;
   final bool needsManualReview;
+
+  /// 模型要求人工确认时给出的具体原因；未提供时为空字符串。
+  final String manualReviewReason;
 
   factory QuestionAnswerPlanDraft.fromMap(Map<String, dynamic> map) {
     final rawLabels =
@@ -67,6 +74,7 @@ class QuestionAnswerPlanDraft {
       needsManualReview:
           map['needs_manual_review'] == true ||
           map['needsManualReview'] == true,
+      manualReviewReason: _readManualReviewReason(map),
     );
   }
 
@@ -329,6 +337,18 @@ Map<String, dynamic> _asMap(dynamic value) {
     );
   }
   return const <String, dynamic>{};
+}
+
+String _readManualReviewReason(Map<String, dynamic> map) {
+  final reason =
+      (map['manual_review_reason'] ?? map['manualReviewReason'])
+          ?.toString()
+          .trim() ??
+      '';
+  if (reason.length <= _manualReviewReasonMaxLength) {
+    return reason;
+  }
+  return '${reason.substring(0, _manualReviewReasonMaxLength)}…';
 }
 
 int? _readInt(dynamic value) {

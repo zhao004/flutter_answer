@@ -121,6 +121,10 @@ class ChatOpenAiQuestionAnswerModel implements QuestionAnswerModel {
       ..writeln('blank_answers 必须覆盖所有输入框且每题号只出现一次。')
       ..writeln('当选项 contentMissing=true 时，选项正文只存在于截图中，必须结合截图判断每个标签的含义。')
       ..writeln('如果截图与结构化文本冲突、题目缺失或答案不确定，设置 needs_manual_review=true。')
+      ..writeln(
+        'needs_manual_review=true 时，必须在 manual_review_reason 中给出简短具体的原因；',
+      )
+      ..writeln('needs_manual_review=false 时，manual_review_reason 返回空字符串。')
       ..writeln('confidence 必须为 0 到 1 之间的小数。');
     if (jsonObjectFallback) {
       systemPrompt.writeln('返回对象必须符合以下 JSON Schema：');
@@ -229,6 +233,7 @@ class ChatOpenAiQuestionAnswerModel implements QuestionAnswerModel {
       },
       'confidence': <String, dynamic>{'type': 'number'},
       'needs_manual_review': <String, dynamic>{'type': 'boolean'},
+      'manual_review_reason': <String, dynamic>{'type': 'string'},
     },
     'required': <String>[
       'question_fingerprint',
@@ -236,6 +241,7 @@ class ChatOpenAiQuestionAnswerModel implements QuestionAnswerModel {
       'blank_answers',
       'confidence',
       'needs_manual_review',
+      'manual_review_reason',
     ],
     'additionalProperties': false,
   };

@@ -290,7 +290,15 @@ class QuestionSolverRuntimeService implements AgentRuntimeService {
         );
         final planError = _validatePlan(plan, context);
         if (plan.needsManualReview) {
-          validationError = '模型要求人工确认：${planError ?? '答案置信度不足或题目不完整'}';
+          // 模型理由与结构校验错误可能同时存在，两者都保留，避免丢失可诊断信息。
+          final details = <String>[
+            if (plan.manualReviewReason.isNotEmpty) plan.manualReviewReason,
+            ?planError,
+          ];
+          validationError =
+              '模型要求人工确认：'
+              '${details.isEmpty ? '答案置信度不足或题目不完整' : details.join('；')}'
+              '（置信度 ${plan.confidence.toStringAsFixed(2)}）';
         } else if (!plan.confidence.isFinite ||
             plan.confidence < 0.6 ||
             plan.confidence > 1.0) {
