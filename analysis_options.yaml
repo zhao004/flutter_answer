@@ -6,6 +6,9 @@ analyzer:
     invalid_use_of_visible_for_testing_member: error
     missing_required_param: error
     unawaited_futures: warning
+  exclude:
+    - build/**
+    - android/**
 
 linter:
   rules:
