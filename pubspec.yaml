@@ -33,8 +33,8 @@ dependencies:
 
   get: 4.7.3
   shared_preferences: ^2.5.3
-  langchain: ^0.8.1
-  langchain_openai: ^0.8.1+1
+  langchain: ^0.9.0
+  langchain_openai: ^0.9.0
 
 dev_dependencies:
   flutter_test:

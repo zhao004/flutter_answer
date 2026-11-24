@@ -100,7 +100,7 @@ class ChatOpenAiQuestionAnswerModel implements QuestionAnswerModel {
     List<ChatMessage> messages,
   ) async {
     final response = await model.invoke(PromptValue.chat(messages));
-    final content = response.output.content.trim();
+    final content = response.output.contentAsString.trim();
     final decoded = _decodeJsonObject(content);
     return QuestionAnswerPlanDraft.fromMap(decoded);
   }

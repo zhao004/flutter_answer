@@ -263,7 +263,9 @@ class LangChainAgentRuntimeService implements AgentRuntimeService {
   }
 
   ChatOpenAI _buildModel(AgentConfig config) {
-    return buildAgentChatModel(config);
+    // Android 自动化动作会改变真实页面状态，必须串行执行并在每一步后重新观察页面；
+    // 因此显式关闭并行工具调用，避免模型在单轮中批量下发多个动作。
+    return buildAgentChatModel(config, parallelToolCalls: false);
   }
 
   Tool _createTool({
